@@ -693,7 +693,7 @@ static void drawEnemy(Enemy *e)
     if (tx <= 0.1) return;
 
     double planeHalf = tan(FOV / 2.0);
-    double screenX = (SCREEN_W / 2.0) * (1.0 - ty / (tx * planeHalf));
+    double screenX = (SCREEN_W / 2.0) * (1.0 + ty / (tx * planeHalf));
     int spriteH = (int)((SCREEN_H / tx) * 1.0);
     int spriteW = spriteH;
     int dsx = (int)(screenX - spriteW / 2.0);
@@ -734,7 +734,7 @@ static void drawFireball(Fireball *fb)
     if (tx <= 0.1) return;
 
     double planeHalf = tan(FOV / 2.0);
-    double screenX = (SCREEN_W / 2.0) * (1.0 - ty / (tx * planeHalf));
+    double screenX = (SCREEN_W / 2.0) * (1.0 + ty / (tx * planeHalf));
     int sz = (int)((SCREEN_H / tx) * 0.35);
     if (sz < 2) sz = 2;
     int dsx = (int)(screenX - sz / 2.0);
@@ -772,7 +772,7 @@ static void drawPickup(Pickup *p)
     if (tx <= 0.1) return;
 
     double planeHalf = tan(FOV / 2.0);
-    double screenX = (SCREEN_W / 2.0) * (1.0 - ty / (tx * planeHalf));
+    double screenX = (SCREEN_W / 2.0) * (1.0 + ty / (tx * planeHalf));
     int sz = (int)((SCREEN_H / tx) * 0.45);
     if (sz < 4) sz = 4;
     int dsx = (int)(screenX - sz / 2.0);
@@ -829,7 +829,7 @@ static void drawParticles(void)
         double ty = dx * sn + dy * cs;
         if (tx <= 0.1) continue;
         double planeHalf = tan(FOV / 2.0);
-        double screenX = (SCREEN_W / 2.0) * (1.0 - ty / (tx * planeHalf));
+        double screenX = (SCREEN_W / 2.0) * (1.0 + ty / (tx * planeHalf));
         int sz = (int)((SCREEN_H / tx) * 0.08);
         if (sz < 1) sz = 1;
         int sx = (int)screenX;
