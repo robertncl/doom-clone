@@ -81,6 +81,7 @@ static int g_keyEdge[K_COUNT];
 static int g_running = 1;
 static int g_muzzleFlash = 0;
 static int g_level = 0;
+static int g_showIntro = 1;
 static double g_levelClearTimer = 0;
 static double g_painFlash = 0;
 static double g_globalTime = 0;
@@ -1128,6 +1129,56 @@ static void drawBanner(const char *text, int y, uint32_t c)
     drawText(text, tx, y - 5, c);
 }
 
+static void drawIntro(void)
+{
+    int x0 = 70, y0 = 50, w = SCREEN_W - 140, h = 280;
+
+    /* dim and tint background panel */
+    for (int y = y0; y < y0 + h; y++) {
+        for (int x = x0; x < x0 + w; x++) {
+            uint32_t c = g_pixels[y * SCREEN_W + x];
+            int r = (c >> 16) & 0xFF;
+            int g = (c >> 8) & 0xFF;
+            int b = c & 0xFF;
+            g_pixels[y * SCREEN_W + x] = makeColor(r / 4 + 10, g / 5, b / 5);
+        }
+    }
+
+    /* double-line border */
+    fillRect(x0, y0, w, 3, 0xC0A040);
+    fillRect(x0, y0 + h - 3, w, 3, 0xC0A040);
+    fillRect(x0, y0, 3, h, 0xC0A040);
+    fillRect(x0 + w - 3, y0, 3, h, 0xC0A040);
+    fillRect(x0 + 6, y0 + 6, w - 12, 1, 0x603018);
+    fillRect(x0 + 6, y0 + h - 7, w - 12, 1, 0x603018);
+    fillRect(x0 + 6, y0 + 6, 1, h - 12, 0x603018);
+    fillRect(x0 + w - 7, y0 + 6, 1, h - 12, 0x603018);
+
+    /* title */
+    drawText("DOOM CLONE", x0 + (w - 10 * 8) / 2, y0 + 20, 0xFFC040);
+    drawText("CONTROLS",   x0 + (w - 8 * 8) / 2,  y0 + 56, 0xE0E0E0);
+
+    int lx = x0 + 60;
+    int ty = y0 + 90;
+    drawText("W S",       lx,        ty, 0x60C0FF);
+    drawText("MOVE",      lx + 160,  ty, 0xC0C0C0); ty += 22;
+    drawText("A D",       lx,        ty, 0x60C0FF);
+    drawText("STRAFE",    lx + 160,  ty, 0xC0C0C0); ty += 22;
+    drawText("ARROWS",    lx,        ty, 0x60C0FF);
+    drawText("TURN",      lx + 160,  ty, 0xC0C0C0); ty += 22;
+    drawText("SPACE",     lx,        ty, 0x60C0FF);
+    drawText("SHOOT",     lx + 160,  ty, 0xC0C0C0); ty += 22;
+    drawText("R",         lx,        ty, 0x60C0FF);
+    drawText("RESTART",   lx + 160,  ty, 0xC0C0C0); ty += 22;
+    drawText("ESC",       lx,        ty, 0x60C0FF);
+    drawText("QUIT",      lx + 160,  ty, 0xC0C0C0); ty += 28;
+
+    /* blinking prompt */
+    if (((int)(g_globalTime * 2.0)) & 1) {
+        drawText("PRESS ANY KEY", x0 + (w - 13 * 8) / 2, ty, 0x40E040);
+    }
+}
+
 static void drawMinimap(void)
 {
     int mx0 = SCREEN_W - 100, my0 = 8;
@@ -1431,6 +1482,15 @@ static void updateGame(double dt)
     g_globalTime += dt;
     if (g_painFlash > 0) g_painFlash -= dt;
 
+    if (g_showIntro) {
+        if (g_keyEdge[K_QUIT]) { g_running = 0; g_keyEdge[K_QUIT] = 0; return; }
+        for (int i = 0; i < K_COUNT; i++) {
+            if (i == K_QUIT) continue;
+            if (g_keyEdge[i]) { g_showIntro = 0; g_keyEdge[i] = 0; break; }
+        }
+        return;
+    }
+
     double moveSpeed = 2.6 * dt;
     double turnSpeed = 2.2 * dt;
     double fx = cos(g_player.angle), fy = sin(g_player.angle);
@@ -1524,6 +1584,8 @@ static void renderFrame(void)
             drawBanner("VICTORY", 60, 0x40E0FF);
         }
     }
+
+    if (g_showIntro) drawIntro();
 }
 
 /* ========================================================================
