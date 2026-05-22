@@ -17,6 +17,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -38,7 +39,7 @@ static const char *g_map[MAP_H] = {
     "#..####....#...#",
     "#..............#",
     "#......#####...#",
-    "#......#...........#"[0] ? "#......#.......#" : "#......#.......#",
+    "#......#.......#",
     "#......#...##..#",
     "#......#.......#",
     "#......#########",
@@ -220,9 +221,6 @@ static void drawSprite(double sx, double sy, double scale, uint32_t tint)
     double dx = sx - g_player.x;
     double dy = sy - g_player.y;
 
-    double invDet = 1.0 / (cos(g_player.angle) * (cos(g_player.angle + M_PI/2) * tan(FOV/2))
-                           - (-sin(g_player.angle)) * (sin(g_player.angle + M_PI/2) * tan(FOV/2)));
-    /* Simpler: use rotation by -angle */
     double cs = cos(-g_player.angle);
     double sn = sin(-g_player.angle);
     double tx = dx * cs - dy * sn;
