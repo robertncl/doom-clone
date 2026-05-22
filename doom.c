@@ -81,6 +81,7 @@ static int g_keyEdge[K_COUNT];
 static int g_running = 1;
 static int g_muzzleFlash = 0;
 static int g_level = 0;
+static int g_levelEnemyCount = 0;
 static int g_showIntro = 1;
 static double g_levelClearTimer = 0;
 static double g_painFlash = 0;
@@ -404,6 +405,7 @@ static void loadLevel(int n)
         g_curMap[y][MAP_W] = 0;
     }
     g_level = n;
+    g_levelEnemyCount = eIdx;
     g_levelClearTimer = 0;
 }
 
@@ -970,28 +972,53 @@ static void drawNumber(int n, int x, int y, uint32_t c)
         drawDigit(buf[i] - '0', x + i * 12, y, c);
 }
 
-/* Tiny 3x5 alpha glyphs for HUD labels */
+/* 3x5 pixel font, encoded MSB-first: row 0 = bits 14..12, row 4 = bits 2..0. */
 static const uint16_t alphaGlyph[26] = {
-    /* A */ 0x57DC, /* B */ 0x7BBC, /* C */ 0x7244, /* D */ 0x7BBC,
-    /* E */ 0x7344, /* F */ 0x7340, /* G */ 0x725C, /* H */ 0x5BDC,
-    /* I */ 0x7248, /* J */ 0x124C, /* K */ 0x5B5C, /* L */ 0x4924,
-    /* M */ 0x5FDC, /* N */ 0x5DDC, /* O */ 0x7BDC, /* P */ 0x7BC8,
-    /* Q */ 0x7BDE, /* R */ 0x7B5C, /* S */ 0x711C, /* T */ 0x7248,
-    /* U */ 0x5B5C, /* V */ 0x5B54, /* W */ 0x5BFC, /* X */ 0x5B5C,
-    /* Y */ 0x5B48, /* Z */ 0x7248,
+    /* A */ 0x2BED, /* B */ 0x6BAE, /* C */ 0x3923, /* D */ 0x6B6E,
+    /* E */ 0x79A7, /* F */ 0x79A4, /* G */ 0x396B, /* H */ 0x5BED,
+    /* I */ 0x7497, /* J */ 0x126A, /* K */ 0x5D35, /* L */ 0x4927,
+    /* M */ 0x5FED, /* N */ 0x6B6B, /* O */ 0x7B67, /* P */ 0x6BA4,
+    /* Q */ 0x2B79, /* R */ 0x6BAD, /* S */ 0x388E, /* T */ 0x7492,
+    /* U */ 0x5B6F, /* V */ 0x5B6A, /* W */ 0x5BFD, /* X */ 0x5AAD,
+    /* Y */ 0x5A92, /* Z */ 0x72A7,
 };
+
+static const uint16_t digitGlyph[10] = {
+    /* 0 */ 0x7B67, /* 1 */ 0x2C97, /* 2 */ 0x62A7, /* 3 */ 0x628E,
+    /* 4 */ 0x5BC9, /* 5 */ 0x798E, /* 6 */ 0x39EF, /* 7 */ 0x7292,
+    /* 8 */ 0x7BE7, /* 9 */ 0x7BCE,
+};
+
+static void drawGlyphBits(uint16_t g, int x, int y, uint32_t c)
+{
+    for (int ry = 0; ry < 5; ry++) {
+        for (int rx = 0; rx < 3; rx++) {
+            int bit = 14 - (ry * 3 + rx);
+            if (g & (1 << bit))
+                fillRect(x + rx * 2, y + ry * 2, 2, 2, c);
+        }
+    }
+}
 
 static void drawLetter(char ch, int x, int y, uint32_t c)
 {
     if (ch >= 'a' && ch <= 'z') ch -= 32;
-    if (ch < 'A' || ch > 'Z') return;
-    uint16_t g = alphaGlyph[ch - 'A'];
-    for (int ry = 0; ry < 5; ry++) {
-        for (int rx = 0; rx < 3; rx++) {
-            int bit = 14 - (ry * 3 + rx);
-            if (bit >= 0 && (g & (1 << bit)))
-                fillRect(x + rx * 2, y + ry * 2, 2, 2, c);
-        }
+    if (ch >= 'A' && ch <= 'Z') {
+        drawGlyphBits(alphaGlyph[ch - 'A'], x, y, c);
+    } else if (ch >= '0' && ch <= '9') {
+        drawGlyphBits(digitGlyph[ch - '0'], x, y, c);
+    } else if (ch == '/') {
+        fillRect(x + 4, y, 2, 2, c);
+        fillRect(x + 2, y + 4, 2, 2, c);
+        fillRect(x + 2, y + 6, 2, 2, c);
+        fillRect(x, y + 8, 2, 2, c);
+    } else if (ch == '-') {
+        fillRect(x, y + 4, 6, 2, c);
+    } else if (ch == ':') {
+        fillRect(x + 2, y + 2, 2, 2, c);
+        fillRect(x + 2, y + 6, 2, 2, c);
+    } else if (ch == '.') {
+        fillRect(x + 2, y + 8, 2, 2, c);
     }
 }
 
@@ -1003,6 +1030,16 @@ static void drawText(const char *s, int x, int y, uint32_t c)
         else { drawLetter(*s, x + dx, y, c); dx += 8; }
         s++;
     }
+}
+
+static int textWidth(const char *s)
+{
+    int w = 0;
+    while (*s) {
+        w += (*s == ' ') ? 4 : 8;
+        s++;
+    }
+    return w;
 }
 
 static void drawFace(int x, int y, int hp)
@@ -1092,21 +1129,18 @@ static void drawHUD(void)
     drawNumber(g_player.ammo, SCREEN_W - 80, barY + 18, 0xE0E060);
 
     /* Level + kills */
-    int kills = 0, total = 0;
-    for (int i = 0; i < MAX_ENEMIES; i++) {
-        Enemy *e = &g_enemies[i];
-        if (e->alive || e->hitFlash > 0 || e->hp <= 0) {
-            total++;
-            if (!e->alive) kills++;
-        }
-    }
+    int alive = 0;
+    for (int i = 0; i < g_levelEnemyCount; i++)
+        if (g_enemies[i].alive) alive++;
+    int kills = g_levelEnemyCount - alive;
+
     char buf[32];
     snprintf(buf, sizeof(buf), "LEVEL %d", g_level + 1);
     drawText(buf, 20, SCREEN_H - 14, 0xE0C080);
 
-    char buf2[32];
-    snprintf(buf2, sizeof(buf2), "KILLS %d %d", kills, total);
-    drawText(buf2, SCREEN_W - 110, SCREEN_H - 14, 0xC0A080);
+    snprintf(buf, sizeof(buf), "KILLS %d/%d", kills, g_levelEnemyCount);
+    int kw = textWidth(buf);
+    drawText(buf, SCREEN_W - kw - 20, SCREEN_H - 14, 0xC0A080);
 }
 
 static void drawCrosshair(void)
@@ -1122,11 +1156,12 @@ static void drawCrosshair(void)
 
 static void drawBanner(const char *text, int y, uint32_t c)
 {
-    fillRect(0, y - 10, SCREEN_W, 3, c);
-    fillRect(0, y + 9, SCREEN_W, 3, c);
-    int tw = (int)strlen(text) * 8;
+    int tw = textWidth(text);
     int tx = (SCREEN_W - tw) / 2;
-    drawText(text, tx, y - 5, c);
+    fillRect(0, y - 10, SCREEN_W, 3, c);
+    fillRect(0, y + 12, SCREEN_W, 3, c);
+    fillRect(tx - 10, y - 5, tw + 20, 12, 0x101010);
+    drawText(text, tx, y - 3, c);
 }
 
 static void drawIntro(void)
@@ -1155,8 +1190,8 @@ static void drawIntro(void)
     fillRect(x0 + w - 7, y0 + 6, 1, h - 12, 0x603018);
 
     /* title */
-    drawText("DOOM CLONE", x0 + (w - 10 * 8) / 2, y0 + 20, 0xFFC040);
-    drawText("CONTROLS",   x0 + (w - 8 * 8) / 2,  y0 + 56, 0xE0E0E0);
+    drawText("DOOM CLONE", x0 + (w - textWidth("DOOM CLONE")) / 2, y0 + 20, 0xFFC040);
+    drawText("CONTROLS",   x0 + (w - textWidth("CONTROLS")) / 2,   y0 + 56, 0xE0E0E0);
 
     int lx = x0 + 60;
     int ty = y0 + 90;
@@ -1175,7 +1210,8 @@ static void drawIntro(void)
 
     /* blinking prompt */
     if (((int)(g_globalTime * 2.0)) & 1) {
-        drawText("PRESS ANY KEY", x0 + (w - 13 * 8) / 2, ty, 0x40E040);
+        drawText("PRESS ANY KEY",
+                 x0 + (w - textWidth("PRESS ANY KEY")) / 2, ty, 0x40E040);
     }
 }
 
