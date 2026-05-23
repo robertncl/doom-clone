@@ -32,12 +32,14 @@
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
   #include <windows.h>
+  #include <mmsystem.h>
 #else
   #include <X11/Xlib.h>
   #include <X11/Xutil.h>
   #include <X11/keysym.h>
   #include <time.h>
   #include <unistd.h>
+  #include <signal.h>
 #endif
 
 #ifndef M_PI
@@ -65,6 +67,16 @@ enum {
     K_SHOOT, K_RESTART, K_QUIT,
     K_COUNT
 };
+
+/* Audio: full implementation appears later, but game logic calls into it. */
+enum {
+    SND_SHOOT, SND_HIT, SND_DEATH,
+    SND_PICKUP_HEALTH, SND_PICKUP_AMMO,
+    SND_FIREBALL, SND_PLAYER_HURT,
+    SND_LEVEL_CLEAR, SND_GAME_OVER,
+    SND_KIND_MAX
+};
+static void playSound(int kind);
 
 enum {
     WALL_NONE = 0,
@@ -1710,6 +1722,7 @@ static void spawnFireball(double x, double y, double tx, double ty)
         g_fireballs[i].vy = dy / d * 3.0;
         g_fireballs[i].alive = 1;
         g_fireballs[i].life = 3.0;
+        playSound(SND_FIREBALL);
         return;
     }
 }
@@ -1738,6 +1751,7 @@ static void updateFireballs(double dt)
             g_painFlash = 0.35;
             spawnBlood(fb->x, fb->y, 6);
             fb->alive = 0;
+            playSound(SND_PLAYER_HURT);
         }
         /* spawn flame trail */
         if (((int)(g_globalTime * 30)) % 2 == 0) {
@@ -1774,6 +1788,7 @@ static void updateEnemies(double dt)
                 if (g_player.health < 0) g_player.health = 0;
                 e->atkCool = 1.0;
                 g_painFlash = 0.3;
+                playSound(SND_PLAYER_HURT);
             }
         } else {
             /* IMP: keep medium distance, throw fireballs */
@@ -1807,9 +1822,11 @@ static void updatePickups(void)
             if (g_pickups[i].type == PU_HEALTH) {
                 g_player.health += 25;
                 if (g_player.health > 100) g_player.health = 100;
+                playSound(SND_PICKUP_HEALTH);
             } else {
                 g_player.ammo += 12;
                 if (g_player.ammo > 99) g_player.ammo = 99;
+                playSound(SND_PICKUP_AMMO);
             }
             g_pickups[i].alive = 0;
             for (int k = 0; k < 8; k++) {
@@ -1834,6 +1851,7 @@ static void shoot(void)
     if (g_player.ammo <= 0) return;
     g_player.ammo--;
     g_muzzleFlash = 5;
+    playSound(SND_SHOOT);
 
     /* Find nearest enemy along the aim ray within angular tolerance */
     double rx = cos(g_player.angle);
@@ -1876,6 +1894,9 @@ static void shoot(void)
             e->alive = 0;
             spawnBlood(e->x, e->y, 14);
             g_score += (e->type == EN_IMP) ? 200 : 100;
+            playSound(SND_DEATH);
+        } else {
+            playSound(SND_HIT);
         }
     }
 }
@@ -1975,6 +1996,7 @@ static void updateGame(double dt)
     } else if (!g_scoreSaved) {
         g_finalRank = submitScore(g_score);
         g_scoreSaved = 1;
+        playSound(SND_GAME_OVER);
     }
     updateParticles(dt);
 
@@ -1982,6 +2004,7 @@ static void updateGame(double dt)
         if (!g_levelBonusGiven) {
             g_score += 500 + (g_level + 1) * 100;
             g_levelBonusGiven = 1;
+            playSound(SND_LEVEL_CLEAR);
         }
         g_levelClearTimer += dt;
         if (g_levelClearTimer > 2.5) {
@@ -2034,6 +2057,242 @@ static void renderFrame(void)
 
     if (g_showIntro) drawIntro();
 }
+
+/* ========================================================================
+ * Audio: software synth + platform output
+ *
+ * Linux: pipes raw PCM to paplay or aplay (graceful no-op if neither exists).
+ * Windows: streams via waveOut with double-buffering.
+ * ======================================================================== */
+
+#define AUDIO_RATE     22050
+#define MAX_SOUNDS     16
+#define AUDIO_BUF_MAX  4096
+
+static const double g_soundDur[SND_KIND_MAX] = {
+    0.20, 0.15, 0.50,
+    0.30, 0.25,
+    0.35, 0.35,
+    0.90, 1.60,
+};
+
+typedef struct {
+    int kind;
+    double t;
+    int active;
+    unsigned seed;
+} ActiveSound;
+
+static ActiveSound g_sounds[MAX_SOUNDS];
+static int g_audioOk = 0;
+
+#ifdef _WIN32
+  #define WAVE_BUF_FRAMES 1024
+  #define WAVE_BUF_COUNT  2
+static HWAVEOUT g_waveOut = NULL;
+static WAVEHDR  g_waveHdr[WAVE_BUF_COUNT];
+static int16_t  g_waveBuf[WAVE_BUF_COUNT][WAVE_BUF_FRAMES];
+#else
+static FILE *g_audioPipe = NULL;
+#endif
+
+static unsigned audioNoise(unsigned *s)
+{
+    *s = (*s) * 1664525u + 1013904223u;
+    return *s;
+}
+
+static double soundSample(int kind, double t, unsigned *seed)
+{
+    switch (kind) {
+    case SND_SHOOT: {
+        double env  = exp(-t * 18.0);
+        double n    = ((int)(audioNoise(seed) >> 16) - 32768) / 32768.0;
+        double boom = sin(t * 100.0 * 2.0 * M_PI) * env * 0.7;
+        return n * env * 0.9 + boom;
+    }
+    case SND_HIT: {
+        double env = exp(-t * 14.0);
+        double freq = 240.0 - t * 380.0;
+        if (freq < 40.0) freq = 40.0;
+        return sin(t * freq * 2.0 * M_PI) * env;
+    }
+    case SND_DEATH: {
+        double env  = exp(-t * 4.0);
+        double n    = ((int)(audioNoise(seed) >> 16) - 32768) / 32768.0;
+        double freq = 360.0 - t * 500.0;
+        if (freq < 50.0) freq = 50.0;
+        return sin(t * freq * 2.0 * M_PI) * env * 0.5 + n * env * 0.35;
+    }
+    case SND_PICKUP_HEALTH: {
+        double env = exp(-t * 6.0);
+        double freq = 700.0 + t * 1600.0;
+        return sin(t * freq * 2.0 * M_PI) * env * 0.8;
+    }
+    case SND_PICKUP_AMMO: {
+        double env = exp(-t * 11.0);
+        double f1  = sin(t * 1500.0 * 2.0 * M_PI);
+        double f2  = sin(t * 2300.0 * 2.0 * M_PI);
+        return (f1 + f2 * 0.5) * env * 0.6;
+    }
+    case SND_FIREBALL: {
+        double env = exp(-t * 5.0) * (1.0 - exp(-t * 28.0));
+        double n   = ((int)(audioNoise(seed) >> 16) - 32768) / 32768.0;
+        double lf  = sin(t * 180.0 * 2.0 * M_PI) * 0.4;
+        return n * env * 0.9 + lf * env;
+    }
+    case SND_PLAYER_HURT: {
+        double env  = exp(-t * 7.0);
+        double n    = ((int)(audioNoise(seed) >> 16) - 32768) / 32768.0;
+        double freq = 380.0 + sin(t * 30.0) * 80.0;
+        return sin(t * freq * 2.0 * M_PI) * env * 0.5 + n * env * 0.35;
+    }
+    case SND_LEVEL_CLEAR: {
+        double env = exp(-t * 1.4);
+        double freqs[3] = {523.25, 659.25, 783.99};
+        int idx = (int)(t * 6.0);
+        if (idx > 2) idx = 2;
+        return sin(t * freqs[idx] * 2.0 * M_PI) * env * 0.6;
+    }
+    case SND_GAME_OVER: {
+        double env  = exp(-t * 0.8);
+        double freq = 220.0 * pow(0.5, t / 0.7);
+        return sin(t * freq * 2.0 * M_PI) * env * 0.8;
+    }
+    }
+    return 0;
+}
+
+static void mixSamples(int16_t *buf, int count)
+{
+    for (int i = 0; i < count; i++) {
+        double sampleTime = i / (double)AUDIO_RATE;
+        double mix = 0;
+        for (int s = 0; s < MAX_SOUNDS; s++) {
+            if (!g_sounds[s].active) continue;
+            double st = g_sounds[s].t + sampleTime;
+            if (st >= g_soundDur[g_sounds[s].kind]) continue;
+            mix += soundSample(g_sounds[s].kind, st, &g_sounds[s].seed);
+        }
+        if (mix > 1.0)  mix = 1.0;
+        if (mix < -1.0) mix = -1.0;
+        buf[i] = (int16_t)(mix * 28000);
+    }
+    double advance = count / (double)AUDIO_RATE;
+    for (int s = 0; s < MAX_SOUNDS; s++) {
+        if (!g_sounds[s].active) continue;
+        g_sounds[s].t += advance;
+        if (g_sounds[s].t >= g_soundDur[g_sounds[s].kind])
+            g_sounds[s].active = 0;
+    }
+}
+
+static void playSound(int kind)
+{
+    if (!g_audioOk || kind < 0 || kind >= SND_KIND_MAX) return;
+    for (int i = 0; i < MAX_SOUNDS; i++) {
+        if (!g_sounds[i].active) {
+            g_sounds[i].kind   = kind;
+            g_sounds[i].t      = 0;
+            g_sounds[i].active = 1;
+            g_sounds[i].seed   = (unsigned)((rand() & 0xFFFF) | 1);
+            return;
+        }
+    }
+}
+
+#ifdef _WIN32
+
+static void audioInit(void)
+{
+    WAVEFORMATEX wfx = {0};
+    wfx.wFormatTag      = WAVE_FORMAT_PCM;
+    wfx.nChannels       = 1;
+    wfx.nSamplesPerSec  = AUDIO_RATE;
+    wfx.wBitsPerSample  = 16;
+    wfx.nBlockAlign     = (wfx.nChannels * wfx.wBitsPerSample) / 8;
+    wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
+
+    if (waveOutOpen(&g_waveOut, WAVE_MAPPER, &wfx, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR) {
+        g_waveOut = NULL;
+        return;
+    }
+    for (int i = 0; i < WAVE_BUF_COUNT; i++) {
+        ZeroMemory(g_waveBuf[i], sizeof(g_waveBuf[i]));
+        g_waveHdr[i].lpData         = (LPSTR)g_waveBuf[i];
+        g_waveHdr[i].dwBufferLength = sizeof(g_waveBuf[i]);
+        g_waveHdr[i].dwFlags        = 0;
+        waveOutPrepareHeader(g_waveOut, &g_waveHdr[i], sizeof(WAVEHDR));
+        g_waveHdr[i].dwFlags |= WHDR_DONE;
+    }
+    g_audioOk = 1;
+}
+
+static void audioShutdown(void)
+{
+    if (!g_waveOut) return;
+    waveOutReset(g_waveOut);
+    for (int i = 0; i < WAVE_BUF_COUNT; i++)
+        waveOutUnprepareHeader(g_waveOut, &g_waveHdr[i], sizeof(WAVEHDR));
+    waveOutClose(g_waveOut);
+    g_waveOut = NULL;
+}
+
+static void audioTick(double dt)
+{
+    (void)dt;
+    if (!g_audioOk) return;
+    for (int i = 0; i < WAVE_BUF_COUNT; i++) {
+        if (!(g_waveHdr[i].dwFlags & WHDR_DONE)) continue;
+        mixSamples(g_waveBuf[i], WAVE_BUF_FRAMES);
+        g_waveHdr[i].dwFlags &= ~WHDR_DONE;
+        g_waveHdr[i].dwBufferLength = WAVE_BUF_FRAMES * sizeof(int16_t);
+        waveOutWrite(g_waveOut, &g_waveHdr[i], sizeof(WAVEHDR));
+    }
+}
+
+#else
+
+static int tryPipe(const char *cmd)
+{
+    FILE *p = popen(cmd, "w");
+    if (!p) return 0;
+    g_audioPipe = p;
+    setvbuf(p, NULL, _IONBF, 0);
+    return 1;
+}
+
+static void audioInit(void)
+{
+    signal(SIGPIPE, SIG_IGN);
+    if (tryPipe("paplay --raw --format=s16le --rate=22050 --channels=1 "
+                "--latency-msec=80 2>/dev/null") ||
+        tryPipe("aplay -q -t raw -f S16_LE -r 22050 -c 1 "
+                "--buffer-time=80000 2>/dev/null")) {
+        g_audioOk = 1;
+    }
+}
+
+static void audioShutdown(void)
+{
+    if (g_audioPipe) { pclose(g_audioPipe); g_audioPipe = NULL; }
+    g_audioOk = 0;
+}
+
+static void audioTick(double dt)
+{
+    if (!g_audioOk || dt <= 0) return;
+    int samples = (int)(dt * AUDIO_RATE + 0.5);
+    if (samples <= 0) return;
+    if (samples > AUDIO_BUF_MAX) samples = AUDIO_BUF_MAX;
+    static int16_t buf[AUDIO_BUF_MAX];
+    mixSamples(buf, samples);
+    if (fwrite(buf, sizeof(int16_t), samples, g_audioPipe) < (size_t)samples) {
+        g_audioOk = 0;  /* pipe broken — quietly stop */
+    }
+}
+
+#endif
 
 /* ========================================================================
  * Platform layer
@@ -2145,6 +2404,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 
     buildTextures();
     loadHighScores();
+    audioInit();
     resetGame();
 
     MSG msg;
@@ -2163,11 +2423,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 
         updateGame(dt);
         renderFrame();
+        audioTick(dt);
         InvalidateRect(hwnd, NULL, FALSE);
         UpdateWindow(hwnd);
 
         Sleep(1);
     }
+    audioShutdown();
     return 0;
 }
 
@@ -2249,6 +2511,7 @@ int main(int argc, char **argv)
 
     buildTextures();
     loadHighScores();
+    audioInit();
     resetGame();
 
     double prev = nowSec();
@@ -2293,6 +2556,7 @@ int main(int argc, char **argv)
 
         updateGame(dt);
         renderFrame();
+        audioTick(dt);
 
         if (!headless) {
             XPutImage(dpy, win, gc, img, 0, 0, 0, 0, SCREEN_W, SCREEN_H);
@@ -2306,6 +2570,7 @@ int main(int argc, char **argv)
         nanosleep(&ts, NULL);
     }
 
+    audioShutdown();
     if (!headless) {
         img->data = NULL;
         XDestroyImage(img);

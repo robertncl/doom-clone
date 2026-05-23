@@ -9,6 +9,6 @@ REM From an x64 prompt the same file builds an x64 .exe instead - the
 REM source itself is target-agnostic.
 
 cl /nologo /O2 /W3 /MT doom.c ^
-   /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib kernel32.lib
+   /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib kernel32.lib winmm.lib
 if errorlevel 1 exit /b 1
 echo Build OK: doom.exe
