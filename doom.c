@@ -56,6 +56,8 @@
 #define MAX_PARTICLES  192
 #define MAX_FIREBALLS  16
 #define MAX_PICKUPS    16
+#define MAX_HIGHSCORES 5
+#define HIGHSCORE_FILE "doom_scores.dat"
 
 enum {
     K_FWD, K_BACK, K_STRAFEL, K_STRAFER,
@@ -83,6 +85,11 @@ static int g_muzzleFlash = 0;
 static int g_level = 0;
 static int g_levelEnemyCount = 0;
 static int g_showIntro = 1;
+static int g_score = 0;
+static int g_scoreSaved = 0;
+static int g_finalRank = 0;
+static int g_levelBonusGiven = 0;
+static int g_highScores[MAX_HIGHSCORES];
 static double g_levelClearTimer = 0;
 static double g_painFlash = 0;
 static double g_globalTime = 0;
@@ -407,6 +414,7 @@ static void loadLevel(int n)
     g_level = n;
     g_levelEnemyCount = eIdx;
     g_levelClearTimer = 0;
+    g_levelBonusGiven = 0;
 }
 
 /* ========================================================================
@@ -1143,6 +1151,76 @@ static void drawHUD(void)
     drawText(buf, SCREEN_W - kw - 20, SCREEN_H - 14, 0xC0A080);
 }
 
+static void drawScoreReadout(void)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "SCORE %d", g_score);
+    int w = textWidth(buf);
+    fillRect(6, 6, w + 8, 14, 0x101010);
+    fillRect(6, 6, w + 8, 1, 0x806020);
+    fillRect(6, 19, w + 8, 1, 0x402010);
+    drawText(buf, 10, 8, 0xFFE060);
+}
+
+static void drawGameOverOverlay(void)
+{
+    int isVictory = (g_player.health > 0);
+    const char *title = isVictory ? "VICTORY" : "YOU DIED";
+    uint32_t titleC = isVictory ? 0x40E0FF : 0xFF4040;
+
+    /* Dim the play area, tint by outcome */
+    int limit = SCREEN_W * (SCREEN_H - 56);
+    for (int i = 0; i < limit; i++) {
+        uint32_t c = g_pixels[i];
+        int r = ((c >> 16) & 0xFF);
+        int g = ((c >> 8)  & 0xFF);
+        int b = ( c        & 0xFF);
+        if (isVictory) {
+            r = r / 3; g = g / 3 + 20; b = b / 3 + 30;
+        } else {
+            r = r / 2 + 50; g = g / 4; b = b / 4;
+        }
+        g_pixels[i] = makeColor(r, g, b);
+    }
+
+    int y = 40;
+    int tw = textWidth(title);
+    drawText(title, (SCREEN_W - tw) / 2, y, titleC);
+
+    y += 32;
+    char sbuf[32];
+    snprintf(sbuf, sizeof(sbuf), "SCORE %d", g_score);
+    drawText(sbuf, (SCREEN_W - textWidth(sbuf)) / 2, y, 0xFFE060);
+
+    y += 22;
+    if (g_finalRank > 0) {
+        char rbuf[40];
+        snprintf(rbuf, sizeof(rbuf), "NEW HIGH SCORE RANK %d", g_finalRank);
+        drawText(rbuf, (SCREEN_W - textWidth(rbuf)) / 2, y, 0x60FF60);
+        y += 22;
+    }
+
+    y += 14;
+    drawText("HIGH SCORES",
+             (SCREEN_W - textWidth("HIGH SCORES")) / 2, y, 0xE0E0E0);
+
+    y += 22;
+    for (int i = 0; i < MAX_HIGHSCORES; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%d. %d", i + 1, g_highScores[i]);
+        uint32_t c = (g_finalRank == i + 1) ? 0x60FF60 : 0xC0A080;
+        drawText(buf, (SCREEN_W - textWidth(buf)) / 2, y, c);
+        y += 14;
+    }
+
+    y += 20;
+    if (((int)(g_globalTime * 2.0)) & 1) {
+        drawText("PRESS R TO RESTART",
+                 (SCREEN_W - textWidth("PRESS R TO RESTART")) / 2,
+                 y, 0x40E040);
+    }
+}
+
 static void drawCrosshair(void)
 {
     int cx = SCREEN_W / 2, cy = SCREEN_H / 2 - 30;
@@ -1166,7 +1244,7 @@ static void drawBanner(const char *text, int y, uint32_t c)
 
 static void drawIntro(void)
 {
-    int x0 = 70, y0 = 50, w = SCREEN_W - 140, h = 280;
+    int x0 = 70, y0 = 20, w = SCREEN_W - 140, h = 360;
 
     /* dim and tint background panel */
     for (int y = y0; y < y0 + h; y++) {
@@ -1206,7 +1284,23 @@ static void drawIntro(void)
     drawText("R",         lx,        ty, 0x60C0FF);
     drawText("RESTART",   lx + 160,  ty, 0xC0C0C0); ty += 22;
     drawText("ESC",       lx,        ty, 0x60C0FF);
-    drawText("QUIT",      lx + 160,  ty, 0xC0C0C0); ty += 28;
+    drawText("QUIT",      lx + 160,  ty, 0xC0C0C0); ty += 24;
+
+    /* divider */
+    fillRect(x0 + 30, ty, w - 60, 1, 0x60381C);
+    ty += 12;
+
+    drawText("HIGH SCORES",
+             x0 + (w - textWidth("HIGH SCORES")) / 2, ty, 0xFFC040);
+    ty += 18;
+
+    for (int i = 0; i < MAX_HIGHSCORES; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%d. %d", i + 1, g_highScores[i]);
+        drawText(buf, x0 + (w - textWidth(buf)) / 2, ty, 0xC0A080);
+        ty += 14;
+    }
+    ty += 10;
 
     /* blinking prompt */
     if (((int)(g_globalTime * 2.0)) & 1) {
@@ -1501,8 +1595,44 @@ static void shoot(void)
         if (e->hp <= 0) {
             e->alive = 0;
             spawnBlood(e->x, e->y, 14);
+            g_score += (e->type == EN_IMP) ? 200 : 100;
         }
     }
+}
+
+static void loadHighScores(void)
+{
+    memset(g_highScores, 0, sizeof(g_highScores));
+    FILE *f = fopen(HIGHSCORE_FILE, "r");
+    if (!f) return;
+    for (int i = 0; i < MAX_HIGHSCORES; i++) {
+        if (fscanf(f, "%d", &g_highScores[i]) != 1) break;
+    }
+    fclose(f);
+}
+
+static void saveHighScores(void)
+{
+    FILE *f = fopen(HIGHSCORE_FILE, "w");
+    if (!f) return;
+    for (int i = 0; i < MAX_HIGHSCORES; i++)
+        fprintf(f, "%d\n", g_highScores[i]);
+    fclose(f);
+}
+
+/* Inserts score; returns 1-based rank if it made the list, else 0. */
+static int submitScore(int s)
+{
+    for (int i = 0; i < MAX_HIGHSCORES; i++) {
+        if (s > g_highScores[i]) {
+            for (int j = MAX_HIGHSCORES - 1; j > i; j--)
+                g_highScores[j] = g_highScores[j - 1];
+            g_highScores[i] = s;
+            saveHighScores();
+            return i + 1;
+        }
+    }
+    return 0;
 }
 
 static void resetGame(void)
@@ -1510,6 +1640,9 @@ static void resetGame(void)
     g_player.health = 100;
     g_player.armor  = 0;
     g_player.ammo   = 50;
+    g_score = 0;
+    g_scoreSaved = 0;
+    g_finalRank = 0;
     loadLevel(0);
 }
 
@@ -1547,7 +1680,7 @@ static void updateGame(double dt)
         if (g_keyEdge[K_SHOOT]) { shoot(); g_keyEdge[K_SHOOT] = 0; }
     }
 
-    if (g_keyEdge[K_RESTART] && g_player.health <= 0) {
+    if (g_keyEdge[K_RESTART] && g_scoreSaved) {
         resetGame();
         g_keyEdge[K_RESTART] = 0;
     }
@@ -1559,16 +1692,24 @@ static void updateGame(double dt)
         updateEnemies(dt);
         updateFireballs(dt);
         updatePickups();
+    } else if (!g_scoreSaved) {
+        g_finalRank = submitScore(g_score);
+        g_scoreSaved = 1;
     }
     updateParticles(dt);
 
     if (g_player.health > 0 && allEnemiesDead()) {
+        if (!g_levelBonusGiven) {
+            g_score += 500 + (g_level + 1) * 100;
+            g_levelBonusGiven = 1;
+        }
         g_levelClearTimer += dt;
         if (g_levelClearTimer > 2.5) {
             if (g_level + 1 < LEVEL_COUNT) {
                 loadLevel(g_level + 1);
-            } else {
-                /* victory: stay on last level cleared */
+            } else if (!g_scoreSaved) {
+                g_finalRank = submitScore(g_score);
+                g_scoreSaved = 1;
                 g_levelClearTimer = 0;
             }
         }
@@ -1601,24 +1742,14 @@ static void renderFrame(void)
     drawWeapon();
     drawHUD();
     drawMinimap();
+    drawScoreReadout();
     postProcess();
 
-    if (g_player.health <= 0) {
-        for (int i = 0; i < SCREEN_W * (SCREEN_H - 56); i++) {
-            uint32_t c = g_pixels[i];
-            int r = (c >> 16) & 0xFF;
-            int g = (c >> 8) & 0xFF;
-            int b = c & 0xFF;
-            r = (r + 220) / 2; g /= 3; b /= 3;
-            g_pixels[i] = makeColor(r, g, b);
-        }
-        drawBanner("YOU DIED  PRESS R", SCREEN_H / 2 - 30, 0xFF4040);
-    } else if (allEnemiesDead()) {
-        if (g_level + 1 < LEVEL_COUNT) {
-            drawBanner("LEVEL CLEAR", 60, 0x40FF40);
-        } else {
-            drawBanner("VICTORY", 60, 0x40E0FF);
-        }
+    if (g_scoreSaved) {
+        drawGameOverOverlay();
+    } else if (g_player.health > 0 && allEnemiesDead() &&
+               g_level + 1 < LEVEL_COUNT) {
+        drawBanner("LEVEL CLEAR", 60, 0x40FF40);
     }
 
     if (g_showIntro) drawIntro();
@@ -1733,6 +1864,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     QueryPerformanceCounter(&prev);
 
     buildTextures();
+    loadHighScores();
     resetGame();
 
     MSG msg;
@@ -1836,6 +1968,7 @@ int main(int argc, char **argv)
     }
 
     buildTextures();
+    loadHighScores();
     resetGame();
 
     double prev = nowSec();
