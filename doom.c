@@ -1950,10 +1950,10 @@ static void updateGame(double dt)
                                        g_player.y + fy  * moveSpeed);
         if (g_keys[K_BACK])    tryMove(g_player.x - fx  * moveSpeed,
                                        g_player.y - fy  * moveSpeed);
-        if (g_keys[K_STRAFEL]) tryMove(g_player.x + sxv * moveSpeed,
-                                       g_player.y + syv * moveSpeed);
-        if (g_keys[K_STRAFER]) tryMove(g_player.x - sxv * moveSpeed,
+        if (g_keys[K_STRAFEL]) tryMove(g_player.x - sxv * moveSpeed,
                                        g_player.y - syv * moveSpeed);
+        if (g_keys[K_STRAFER]) tryMove(g_player.x + sxv * moveSpeed,
+                                       g_player.y + syv * moveSpeed);
         if (g_keys[K_TURNL])   g_player.angle -= turnSpeed;
         if (g_keys[K_TURNR])   g_player.angle += turnSpeed;
 
