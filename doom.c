@@ -51,7 +51,7 @@
 #define FOV            (M_PI / 3.0)
 #define MAX_DEPTH      24.0
 #define TEX_SIZE       64
-#define LEVEL_COUNT    3
+#define LEVEL_COUNT    4
 #define MAX_ENEMIES    16
 #define MAX_PARTICLES  192
 #define MAX_FIREBALLS  16
@@ -72,6 +72,7 @@ enum {
     WALL_BRICK,
     WALL_METAL,
     WALL_WOOD,
+    WALL_HELL,
     WALL_KIND_MAX
 };
 
@@ -147,6 +148,7 @@ static uint32_t g_ceilTex[TEX_SIZE * TEX_SIZE];
  *   '='  brick wall
  *   'B'  metal wall
  *   'D'  wood (door-look)
+ *   'H'  hell rock wall
  *   '.'  floor
  *   'p'  player spawn
  *   'g'  grunt spawn
@@ -209,6 +211,24 @@ static const char *g_levels[LEVEL_COUNT][MAP_H] = {
         "#.============g#",
         "################",
     },
+    {
+        "HHHHHHHHHHHHHHHH",
+        "Hp....g........H",
+        "H..============H",
+        "H..=...i......aH",
+        "H..=..HHHHHH...H",
+        "H..=..H.h..H.g.H",
+        "H..====Hgg.H...H",
+        "H......H...H...H",
+        "H..a...HHHHH...H",
+        "H..============H",
+        "H..............H",
+        "H...HHHHHHH..i.H",
+        "H...H.gg..H....H",
+        "H.h.H.....H..a.H",
+        "H...HHHHHHHHHHHH",
+        "HHHHHHHHHHHHHHHH",
+    },
 };
 
 static char g_curMap[MAP_H][MAP_W + 1];
@@ -253,66 +273,147 @@ static void buildTextures(void)
 {
     for (int v = 0; v < TEX_SIZE; v++) {
         for (int u = 0; u < TEX_SIZE; u++) {
-            /* Stone */
+            /* ---- Stone: per-block tint, cracks, occasional moss patches ---- */
             int n = hash2(u, v) - 128;
-            int crack = ((u + v * 2) % 19 == 0 || (u * 2 - v + 64) % 23 == 0) ? -50 : 0;
-            int sR = 130 + n / 4 + crack;
-            int sG = 125 + n / 4 + crack;
-            int sB = 115 + n / 4 + crack;
-            g_wallTex[WALL_STONE][v * TEX_SIZE + u] = makeColor(sR, sG, sB);
+            int blockU = u / 16, blockV = v / 16;
+            int blockTint = (hash2(blockU + 1, blockV + 7) - 128) / 6;
+            int crack1 = ((u + v * 2) % 19 == 0) ? -50 : 0;
+            int crack2 = ((u * 2 - v + 64) % 23 == 0) ? -40 : 0;
+            int crack3 = (abs(u - 28) + abs(v * 2 - 30) < 4) ? -35 : 0;
+            int mossSeed = hash2(u / 4, v / 4);
+            int mossLocal = hash2(u, v);
+            int moss = (mossSeed > 230 && mossLocal > 160);
+            int sR, sG, sB;
+            if (moss) {
+                int mn2 = hash2(u, v) - 128;
+                sR = 50 + mn2 / 6;
+                sG = 110 + mn2 / 4;
+                sB = 50 + mn2 / 6;
+            } else {
+                int delta = crack1 + crack2 + crack3 + blockTint + n / 4;
+                sR = 130 + delta;
+                sG = 125 + delta - 2;
+                sB = 115 + delta - 10;
+            }
+            /* faint edge shadow at block boundary */
+            int blockShadow = ((u % 16 == 0 || v % 16 == 0) && !moss) ? -15 : 0;
+            g_wallTex[WALL_STONE][v * TEX_SIZE + u] =
+                makeColor(sR + blockShadow, sG + blockShadow, sB + blockShadow);
 
-            /* Brick: alternating-row offset, mortar lines */
+            /* ---- Brick: bevels (top/left highlight, bottom/right shadow) ---- */
             int row = v / 8;
             int colOff = (row & 1) ? 8 : 0;
             int brickU = (u + colOff) % 16;
             int brickV = v % 8;
             int mortar = (brickV == 0 || brickV == 7 ||
                           brickU == 0 || brickU == 15);
-            int bn = hash2(u / 2, v / 2) - 128;
-            uint32_t brickCol;
+            int hiEdge  = (brickV == 1 || brickU == 1);
+            int loEdge  = (brickV == 6 || brickU == 14);
+            int bn = hash2(u / 2 + (row & 1) * 13, v / 2) - 128;
+            int brR, brG, brB;
             if (mortar) {
-                brickCol = makeColor(70, 60, 55);
+                brR = 60; brG = 52; brB = 48;
             } else {
-                brickCol = makeColor(150 + bn / 4, 65 + bn / 8, 50 + bn / 8);
+                brR = 150 + bn / 4;
+                brG = 65  + bn / 8;
+                brB = 50  + bn / 8;
+                if (hiEdge) { brR += 25; brG += 15; brB += 8; }
+                if (loEdge) { brR -= 30; brG -= 20; brB -= 15; }
             }
-            g_wallTex[WALL_BRICK][v * TEX_SIZE + u] = brickCol;
+            g_wallTex[WALL_BRICK][v * TEX_SIZE + u] = makeColor(brR, brG, brB);
 
-            /* Metal: 32x32 panels with rivets and bevel */
+            /* ---- Metal: bevels, rivets, scratches and small rust spots ---- */
             int pU = u % 32, pV = v % 32;
             int bevel = (pU < 2 || pU > 29 || pV < 2 || pV > 29);
             int hi = (pU < 1 || pV < 1);
             int rivet = ((pU == 5 || pU == 26) && (pV == 5 || pV == 26));
+            int rivetHi = (pU == 5 && pV == 5);
             int mn = hash2(u, v) - 128;
-            uint32_t metalCol;
-            if (rivet) metalCol = makeColor(210, 210, 220);
-            else if (hi) metalCol = makeColor(150, 160, 190);
-            else if (bevel) metalCol = makeColor(40, 50, 70);
-            else metalCol = makeColor(80 + mn / 6, 95 + mn / 6, 130 + mn / 6);
-            g_wallTex[WALL_METAL][v * TEX_SIZE + u] = metalCol;
+            int scratch = ((u * 3 + v) % 31 == 0 && (v % 8) > 1) ? 30 : 0;
+            int rust = (hash2(u / 3 + 5, v / 3 + 11) > 235) ? 1 : 0;
+            int mR, mG, mB;
+            if (rivetHi)     { mR = 230; mG = 230; mB = 235; }
+            else if (rivet)  { mR = 200; mG = 200; mB = 210; }
+            else if (bevel && hi) { mR = 150; mG = 160; mB = 190; }
+            else if (bevel)  { mR = 38; mG = 46; mB = 66; }
+            else if (rust)   { mR = 130 + mn / 8; mG = 70  + mn / 10; mB = 35 + mn / 12; }
+            else {
+                mR = 80 + mn / 6 + scratch;
+                mG = 95 + mn / 6 + scratch;
+                mB = 130 + mn / 6 + scratch;
+            }
+            g_wallTex[WALL_METAL][v * TEX_SIZE + u] = makeColor(mR, mG, mB);
 
-            /* Wood: grain stripes with knots */
+            /* ---- Wood: vertical plank divisions, sin grain, knots ---- */
             int wn = hash2(u / 4, v) - 128;
+            int plank = u % 16;
+            int plankSeam = (plank == 0 || plank == 15) ? -40 : 0;
+            int plankHi   = (plank == 1) ? 15 : 0;
             int grain = (int)(18.0 * sin(u * 0.42 + wn * 0.05));
             int band = (v % 22 < 2) ? -35 : 0;
-            int knot = ((u - 22) * (u - 22) + (v - 30) * (v - 30) < 10) ? -45 : 0;
-            int wR = 115 + grain + wn / 8 + band + knot;
-            int wG = 70  + grain / 2 + wn / 10 + band + knot;
-            int wB = 30  + wn / 12 + band + knot;
+            int knot1 = ((u - 22) * (u - 22) + (v - 30) * (v - 30) < 10) ? -45 : 0;
+            int knot2 = ((u - 8)  * (u - 8)  + (v - 50) * (v - 50) < 7)  ? -40 : 0;
+            int wR = 115 + grain + wn / 8 + band + knot1 + knot2 + plankSeam + plankHi;
+            int wG = 70  + grain / 2 + wn / 10 + band + knot1 + knot2 + plankSeam;
+            int wB = 30  + wn / 12 + band + knot1 + knot2 + plankSeam;
             g_wallTex[WALL_WOOD][v * TEX_SIZE + u] = makeColor(wR, wG, wB);
 
-            /* Floor tile */
+            /* ---- Hell rock: dark base with glowing red veins + lava spots ---- */
+            int hn = hash2(u, v) - 128;
+            int hn2 = hash2(u + 50, v + 30) - 128;
+            int veinU = ((u + (hash2(u / 6, v / 6) % 6)) % 22);
+            int veinV = ((v + (hash2(v / 6, u / 6) % 6)) % 18);
+            int vein = (veinU < 2 || veinV < 2);
+            if (hash2(u / 5 + 3, v / 5 + 9) > 195) vein = 0;
+            int lava = (hash2(u / 4, v / 4) > 248) ? 1 : 0;
+            int hR, hG, hB;
+            if (vein) {
+                int glow = 200 + hn / 6;
+                hR = glow; hG = 40 + hn2 / 8; hB = 20 + hn2 / 10;
+            } else if (lava) {
+                hR = 230; hG = 140 + hn / 8; hB = 30;
+            } else {
+                hR = 60 + hn / 4;
+                hG = 22 + hn2 / 8;
+                hB = 22 + hn / 10;
+                /* dark cracks */
+                if (((u * u + v * v) % 17) == 0) { hR -= 20; hG -= 8; hB -= 8; }
+            }
+            g_wallTex[WALL_HELL][v * TEX_SIZE + u] = makeColor(hR, hG, hB);
+
+            /* ---- Floor tile: bevels, scuffs, cracked tile patches ---- */
             int tU = u % 16, tV = v % 16;
             int grout = (tU == 0 || tV == 0 || tU == 15 || tV == 15);
+            int tileBevelHi = (tU == 1 || tV == 1);
+            int tileBevelLo = (tU == 14 || tV == 14);
             int fn = hash2(u, v) - 128;
-            uint32_t floorCol;
-            if (grout) floorCol = makeColor(25, 25, 30);
-            else floorCol = makeColor(75 + fn / 6, 70 + fn / 6, 60 + fn / 8);
-            g_floorTex[v * TEX_SIZE + u] = floorCol;
+            int tileSeed = hash2(u / 16, v / 16);
+            int crackedTile = (tileSeed > 230);
+            int fR, fG, fB;
+            if (grout) {
+                fR = 25; fG = 25; fB = 30;
+            } else if (crackedTile && ((u + v * 2) % 9 == 0)) {
+                fR = 35; fG = 35; fB = 35;
+            } else {
+                fR = 75 + fn / 6;
+                fG = 70 + fn / 6;
+                fB = 60 + fn / 8;
+                if (crackedTile) { fR -= 15; fG -= 12; fB -= 10; }
+                if (tileBevelHi) { fR += 12; fG += 12; fB += 10; }
+                if (tileBevelLo) { fR -= 12; fG -= 12; fB -= 10; }
+            }
+            /* faint diagonal scuff */
+            if ((u + v) % 23 == 0 && !grout) { fR += 8; fG += 8; fB += 8; }
+            g_floorTex[v * TEX_SIZE + u] = makeColor(fR, fG, fB);
 
-            /* Ceiling dark */
+            /* ---- Ceiling: noise + occasional support-beam pattern ---- */
             int cn = hash2(u + 17, v + 31) - 128;
-            g_ceilTex[v * TEX_SIZE + u] =
-                makeColor(38 + cn / 8, 36 + cn / 8, 44 + cn / 8);
+            int beam = (v % 32 < 3 || u % 32 < 3) ? -20 : 0;
+            int beamHi = ((v % 32 == 0) || (u % 32 == 0)) ? -8 : 0;
+            g_ceilTex[v * TEX_SIZE + u] = makeColor(
+                38 + cn / 8 + beam + beamHi,
+                36 + cn / 8 + beam + beamHi,
+                44 + cn / 8 + beam + beamHi);
         }
     }
 }
@@ -330,6 +431,7 @@ static int mapWallType(int mx, int my)
     case '=': return WALL_BRICK;
     case 'B': return WALL_METAL;
     case 'D': return WALL_WOOD;
+    case 'H': return WALL_HELL;
     default:  return WALL_NONE;
     }
 }
@@ -548,65 +650,127 @@ static int gruntPixel(double u, double v, uint32_t *out, double anim)
     double sway = sin(anim) * 0.015;
     cx -= sway;
 
-    /* helmet dome */
-    if (cx * cx + (cy + 0.36) * (cy + 0.36) < 0.022 && cy < -0.30) {
-        *out = 0x405028; return 1;
+    /* --- Foreground details first so they aren't overpainted by bigger shapes --- */
+
+    /* Gun muzzle tip (most forward) */
+    if (cy > 0.005 && cy < 0.035 && cx > 0.36 && cx < 0.39) {
+        *out = 0x050505; return 1;
     }
-    /* helmet rim */
-    if (fabs(cx) < 0.15 && cy > -0.32 && cy < -0.27) {
-        *out = 0x202810; return 1;
+    /* Gun barrel */
+    if (cy > 0.00 && cy < 0.04 && cx > 0.20 && cx < 0.36) {
+        int t = (int)((cx - 0.20) * 80);
+        *out = makeColor(40 - t / 4, 40 - t / 4, 40 - t / 4); return 1;
     }
-    /* face skin */
-    if (cx * cx + (cy + 0.22) * (cy + 0.22) < 0.016) {
-        *out = 0xC0A080; return 1;
+    /* Gun body */
+    if (cy > 0.04 && cy < 0.10 && cx > 0.22 && cx < 0.32) {
+        *out = (cy < 0.06) ? 0x303030 : 0x181818; return 1;
     }
-    /* eyes */
-    if ((cx - 0.05) * (cx - 0.05) + (cy + 0.22) * (cy + 0.22) < 0.0014) {
-        *out = 0x101010; return 1;
+    /* Hand on gun */
+    if (cy > 0.04 && cy < 0.11 && cx > 0.17 && cx < 0.22) {
+        *out = 0xA08060; return 1;
     }
-    if ((cx + 0.05) * (cx + 0.05) + (cy + 0.22) * (cy + 0.22) < 0.0014) {
-        *out = 0x101010; return 1;
+
+    /* Belt buckle (highlight) */
+    if (cy > 0.20 && cy < 0.26 && fabs(cx) < 0.04) {
+        *out = (cy < 0.22) ? 0xE0C040 : 0xA08020; return 1;
     }
-    /* mouth */
-    if (fabs(cx) < 0.04 && cy > -0.14 && cy < -0.11) {
-        *out = 0x401010; return 1;
-    }
-    /* shoulders */
-    if (cy > -0.10 && cy < -0.04 && fabs(cx) < 0.25) {
-        *out = 0x3C5028; return 1;
-    }
-    /* torso (vest) */
-    if (cy > -0.04 && cy < 0.20 && fabs(cx) < 0.20) {
-        *out = 0x506838; return 1;
-    }
-    /* vest stripes */
-    if (cy > -0.02 && cy < 0.02 && fabs(cx) < 0.18) {
-        *out = 0x304018; return 1;
-    }
-    /* belt */
-    if (cy > 0.20 && cy < 0.24 && fabs(cx) < 0.22) {
+    /* Belt strap */
+    if (cy > 0.20 && cy < 0.26 && fabs(cx) < 0.22) {
         *out = 0x181208; return 1;
     }
-    /* belt buckle */
-    if (cy > 0.20 && cy < 0.25 && fabs(cx) < 0.04) {
-        *out = 0xC0A030; return 1;
+
+    /* Chest emblem (cross) */
+    if (((fabs(cx) < 0.015 && cy > 0.03 && cy < 0.13) ||
+         (fabs(cy - 0.08) < 0.015 && fabs(cx) < 0.05))) {
+        *out = 0xC0A040; return 1;
     }
-    /* legs */
-    if (cy > 0.24 && cy < 0.46) {
-        if (cx > -0.18 && cx < -0.03) { *out = 0x2C3818; return 1; }
-        if (cx > 0.03 && cx < 0.18)   { *out = 0x2C3818; return 1; }
+
+    /* Helmet rim (band across forehead) */
+    if (fabs(cx) < 0.15 && cy > -0.32 && cy < -0.28) {
+        *out = 0x141810; return 1;
     }
-    /* boots */
-    if (cy > 0.42 && cy < 0.50 && (fabs(cx + 0.105) < 0.085 ||
-                                    fabs(cx - 0.105) < 0.085)) {
+    /* Visor reflection */
+    if ((cx - 0.05) * (cx - 0.05) + (cy + 0.245) * (cy + 0.245) < 0.0004) {
+        *out = 0x80B0E0; return 1;
+    }
+    if ((cx + 0.06) * (cx + 0.06) + (cy + 0.245) * (cy + 0.245) < 0.0002) {
+        *out = 0x4070A0; return 1;
+    }
+    /* Visor (dark goggles band) */
+    if (fabs(cx) < 0.13 && cy > -0.28 && cy < -0.22) {
+        *out = 0x080808; return 1;
+    }
+
+    /* Stubble / mouth shadow */
+    if (fabs(cx) < 0.06 && cy > -0.16 && cy < -0.12) {
+        *out = 0x4C2818; return 1;
+    }
+
+    /* Helmet highlight strip on top */
+    if (cy > -0.46 && cy < -0.42 && fabs(cx) < 0.10) {
+        *out = 0x80A058; return 1;
+    }
+    /* Helmet dome (background of head) */
+    if (cx * cx + (cy + 0.36) * (cy + 0.36) < 0.025 && cy < -0.27) {
+        double t = (cy + 0.46) / 0.20;
+        if (t < 0) t = 0;
+        if (t > 1) t = 1;
+        int v_ = (int)(70 - 30 * t);
+        *out = makeColor(v_ - 10, v_ + 20, v_ - 20);
+        return 1;
+    }
+
+    /* Face skin with side shading */
+    if (cx * cx + (cy + 0.18) * (cy + 0.18) < 0.014) {
+        double xt = (cx + 0.10) / 0.20;
+        if (xt > 1) xt = 1;
+        if (xt < 0) xt = 0;
+        int rr = (int)(210 - 40 * (1 - xt));
+        int gg = (int)(170 - 30 * (1 - xt));
+        int bb = (int)(130 - 25 * (1 - xt));
+        *out = makeColor(rr, gg, bb);
+        return 1;
+    }
+
+    /* Pauldrons (shoulders) with edge shading */
+    if (cy > -0.10 && cy < -0.04 && fabs(cx) < 0.26) {
+        double xt = fabs(cx) / 0.26;
+        int base = (int)(78 - 30 * xt);
+        *out = makeColor(base - 10, base + 18, base - 28);
+        return 1;
+    }
+
+    /* Vest stripe */
+    if (cy > -0.02 && cy < 0.01 && fabs(cx) < 0.18) {
+        *out = 0x2A3812; return 1;
+    }
+    /* Chest armor */
+    if (cy > -0.04 && cy < 0.20 && fabs(cx) < 0.20) {
+        double t = (cy + 0.04) / 0.24;
+        int base = (int)(90 - 35 * t);
+        *out = makeColor(base - 8, base + 18, base - 28);
+        return 1;
+    }
+
+    /* Legs with vertical shading */
+    if (cy > 0.26 && cy < 0.44) {
+        if ((cx > -0.18 && cx < -0.03) || (cx > 0.03 && cx < 0.18)) {
+            double t = (cy - 0.26) / 0.18;
+            int base = (int)(60 - 25 * t);
+            *out = makeColor(base - 8, base + 12, base - 20);
+            return 1;
+        }
+    }
+
+    /* Boot tip highlight */
+    if (cy > 0.42 && cy < 0.44 && (fabs(cx + 0.10) < 0.085 ||
+                                    fabs(cx - 0.10) < 0.085)) {
+        *out = 0x302010; return 1;
+    }
+    /* Boots */
+    if (cy > 0.42 && cy < 0.50 && (fabs(cx + 0.10) < 0.085 ||
+                                    fabs(cx - 0.10) < 0.085)) {
         *out = 0x100804; return 1;
-    }
-    /* gun in right hand */
-    if (cy > 0.02 && cy < 0.06 && cx > 0.20 && cx < 0.34) {
-        *out = 0x282828; return 1;
-    }
-    if (cy > 0.06 && cy < 0.10 && cx > 0.22 && cx < 0.30) {
-        *out = 0x181818; return 1;
     }
     return 0;
 }
@@ -615,80 +779,195 @@ static int impPixel(double u, double v, uint32_t *out, double anim)
 {
     double cx = u - 0.5;
     double cy = v - 0.5;
-    double bob = sin(anim * 2.0) * 0.02;
+    double bob = sin(anim * 2.0) * 0.025;
     cy -= bob;
+    double armSwing = sin(anim * 2.0) * 0.05;
 
-    /* horns (left + right tipped triangles) */
-    if (cy > -0.50 && cy < -0.34) {
-        double t = (cy + 0.50) / 0.16;
-        double halfW = 0.05 * t;
-        if (cx > -0.18 - halfW && cx < -0.18 + halfW) {
-            *out = (cy < -0.46) ? 0x101010 : 0x402010; return 1;
-        }
-        if (cx >  0.18 - halfW && cx <  0.18 + halfW) {
-            *out = (cy < -0.46) ? 0x101010 : 0x402010; return 1;
-        }
+    /* --- Smallest foreground details first --- */
+
+    /* Eye highlight (specular) */
+    if ((cx - 0.075) * (cx - 0.075) + (cy + 0.275) * (cy + 0.275) < 0.00035) {
+        *out = 0xFFFFB0; return 1;
     }
-    /* head */
-    if (cx * cx * 1.0 + (cy + 0.30) * (cy + 0.30) * 1.2 < 0.028) {
-        *out = 0x803020; return 1;
+    if ((cx + 0.065) * (cx + 0.065) + (cy + 0.275) * (cy + 0.275) < 0.00025) {
+        *out = 0xFFFF80; return 1;
     }
-    /* skull ridges */
-    if (cy > -0.42 && cy < -0.38 && fabs(cx) < 0.12) {
-        *out = 0x602010; return 1;
-    }
-    /* glowing eyes */
-    if ((cx - 0.07) * (cx - 0.07) + (cy + 0.28) * (cy + 0.28) < 0.0022) {
+    /* Glowing yellow iris */
+    if ((cx - 0.07) * (cx - 0.07) + (cy + 0.27) * (cy + 0.27) < 0.0020) {
         *out = 0xFFE020; return 1;
     }
-    if ((cx + 0.07) * (cx + 0.07) + (cy + 0.28) * (cy + 0.28) < 0.0022) {
+    if ((cx + 0.07) * (cx + 0.07) + (cy + 0.27) * (cy + 0.27) < 0.0020) {
         *out = 0xFFE020; return 1;
     }
-    /* nose */
-    if (fabs(cx) < 0.012 && cy > -0.24 && cy < -0.20) {
-        *out = 0x501808; return 1;
+    /* Eye socket (dark ring around iris) */
+    if ((cx - 0.07) * (cx - 0.07) + (cy + 0.27) * (cy + 0.27) < 0.0042) {
+        *out = 0x100404; return 1;
     }
-    /* mouth gash */
-    if (cy > -0.18 && cy < -0.15 && fabs(cx) < 0.08) {
-        *out = 0x200804; return 1;
+    if ((cx + 0.07) * (cx + 0.07) + (cy + 0.27) * (cy + 0.27) < 0.0042) {
+        *out = 0x100404; return 1;
     }
-    /* fangs */
-    if (cy > -0.15 && cy < -0.11 && (fabs(cx + 0.04) < 0.012 ||
-                                      fabs(cx - 0.04) < 0.012)) {
-        *out = 0xF0E8C0; return 1;
+
+    /* Nostrils */
+    if ((fabs(fabs(cx) - 0.014) < 0.005) && cy > -0.215 && cy < -0.195) {
+        *out = 0x000000; return 1;
     }
-    /* body */
-    if (cx * cx * 1.6 + (cy - 0.06) * (cy - 0.06) * 0.9 < 0.06) {
-        *out = 0x6A1810; return 1;
+    /* Nose snout */
+    if (fabs(cx) < 0.022 && cy > -0.23 && cy < -0.17) {
+        *out = 0x401408; return 1;
     }
-    /* body spots */
-    if ((cx + 0.10) * (cx + 0.10) + (cy + 0.02) * (cy + 0.02) < 0.0035) {
+
+    /* Upper fangs */
+    if (cy > -0.15 && cy < -0.10 &&
+        (fabs(cx + 0.05) < 0.014 || fabs(cx - 0.05) < 0.014)) {
+        int gray = 230 - (int)((cy + 0.15) * 200);
+        *out = makeColor(gray, gray, gray * 9 / 10);
+        return 1;
+    }
+    /* Lower fangs */
+    if (cy > -0.10 && cy < -0.07 &&
+        (fabs(cx + 0.025) < 0.012 || fabs(cx - 0.025) < 0.012)) {
+        *out = 0xD8D8C0; return 1;
+    }
+    /* Mouth gash */
+    if (cy > -0.17 && cy < -0.13 && fabs(cx) < 0.10) {
+        *out = 0x180404; return 1;
+    }
+
+    /* Skull ridge brow */
+    if (cy > -0.42 && cy < -0.38 && fabs(cx) < 0.14) {
         *out = 0x401008; return 1;
     }
-    if ((cx - 0.08) * (cx - 0.08) + (cy - 0.10) * (cy - 0.10) < 0.0035) {
-        *out = 0x401008; return 1;
+
+    /* Belly skull mark */
+    if (fabs(cx) < 0.035 && cy > -0.02 && cy < 0.03) {
+        *out = 0xE0C040; return 1;
     }
-    /* arms with claws */
-    double armSwing = sin(anim * 2.0) * 0.04;
-    if (cy > -0.05 + armSwing && cy < 0.22 + armSwing) {
-        if (cx > 0.18 && cx < 0.32) { *out = 0x501008; return 1; }
-        if (cx > -0.32 && cx < -0.18) { *out = 0x501008; return 1; }
+    if (fabs(cx) < 0.02 && cy > 0.03 && cy < 0.06) {
+        *out = 0x100400; return 1;
     }
-    /* claws */
-    if (cy > 0.20 + armSwing && cy < 0.27 + armSwing) {
-        if ((cx > 0.18 && cx < 0.21) || (cx > 0.24 && cx < 0.27) ||
-            (cx > 0.30 && cx < 0.33)) { *out = 0xE8E8E0; return 1; }
-        if ((cx > -0.33 && cx < -0.30) || (cx > -0.27 && cx < -0.24) ||
-            (cx > -0.21 && cx < -0.18)) { *out = 0xE8E8E0; return 1; }
+    /* Rib hints */
+    if ((cy > 0.06 && cy < 0.08) || (cy > 0.11 && cy < 0.13)) {
+        if (fabs(cx) > 0.06 && fabs(cx) < 0.13) {
+            *out = 0x300808; return 1;
+        }
     }
-    /* legs */
-    if (cy > 0.24 && cy < 0.46 && fabs(cx) > 0.05 && fabs(cx) < 0.16) {
-        *out = 0x501008; return 1;
+
+    /* Claws */
+    {
+        double clawY = 0.20 + armSwing;
+        if (cy > clawY && cy < clawY + 0.07) {
+            for (int side = -1; side <= 1; side += 2) {
+                for (int finger = 0; finger < 3; finger++) {
+                    double fx = side * (0.20 + finger * 0.05);
+                    if (fabs(cx - fx) < 0.013) {
+                        double t = (cy - clawY) / 0.07;
+                        int gray = (int)(230 - 130 * t);
+                        if (gray < 100) gray = 100;
+                        *out = makeColor(gray, gray, gray * 4 / 5);
+                        return 1;
+                    }
+                }
+            }
+        }
     }
-    /* hoof claws */
-    if (cy > 0.42 && cy < 0.48 && fabs(cx) > 0.04 && fabs(cx) < 0.17) {
-        *out = 0x202020; return 1;
+    /* Hoof claws (toes) */
+    if (cy > 0.42 && cy < 0.48) {
+        for (int side = -1; side <= 1; side += 2) {
+            for (int toe = 0; toe < 2; toe++) {
+                double fx = side * (0.06 + toe * 0.06);
+                if (fabs(cx - fx) < 0.018) {
+                    *out = 0x101010; return 1;
+                }
+            }
+        }
     }
+
+    /* --- Limbs / body / head (background of sprite) --- */
+
+    /* Arms (biceps with highlight) */
+    {
+        double topY = -0.06 + armSwing;
+        double botY = 0.22  + armSwing;
+        if (cy > topY && cy < botY) {
+            if (cx > 0.18 && cx < 0.32) {
+                double bicep = (cx - 0.25) * (cx - 0.25) +
+                               (cy - 0.05) * (cy - 0.05) * 0.4;
+                *out = (bicep < 0.005) ? 0x782010 : 0x501008;
+                return 1;
+            }
+            if (cx > -0.32 && cx < -0.18) {
+                double bicep = (cx + 0.25) * (cx + 0.25) +
+                               (cy - 0.05) * (cy - 0.05) * 0.4;
+                *out = (bicep < 0.005) ? 0x782010 : 0x501008;
+                return 1;
+            }
+        }
+    }
+
+    /* Legs */
+    if (cy > 0.24 && cy < 0.44 && fabs(cx) > 0.04 && fabs(cx) < 0.15) {
+        double t = (cy - 0.24) / 0.20;
+        int base = (int)(85 - 35 * t);
+        *out = makeColor(base, base / 5, base / 6);
+        return 1;
+    }
+
+    /* Tail (S-curve, animated) */
+    {
+        double tailX = sin((cy + 0.5) * 7.0 + anim * 2.0) * 0.05;
+        if (cy > 0.02 && cy < 0.34 && fabs(cx + 0.30 + tailX) < 0.02) {
+            *out = 0x401008; return 1;
+        }
+    }
+
+    /* Body torso with gradient shading + highlight */
+    {
+        double bodyT = cx * cx * 1.6 + (cy - 0.04) * (cy - 0.04) * 0.9;
+        if (bodyT < 0.068) {
+            double shade = 1.0 - bodyT * 8;
+            if (shade < 0.4) shade = 0.4;
+            int rr = (int)(130 * shade);
+            int gg = (int)(40  * shade);
+            int bb = (int)(28  * shade);
+            if (cx < -0.05 && cy < 0.04) { rr += 30; gg += 14; bb += 8; }
+            *out = makeColor(rr, gg, bb);
+            return 1;
+        }
+    }
+
+    /* Head with subtle shading */
+    {
+        double headT = cx * cx + (cy + 0.30) * (cy + 0.30) * 1.2;
+        if (headT < 0.034) {
+            double shade = 1.0 - headT * 12;
+            if (shade < 0.3) shade = 0.3;
+            int rr = (int)(150 * shade) + 18;
+            int gg = (int)(55  * shade) + 8;
+            int bb = (int)(40  * shade) + 6;
+            *out = makeColor(rr, gg, bb);
+            return 1;
+        }
+    }
+
+    /* Horns (tapering, gradient) */
+    {
+        double hx[2] = {-0.17, 0.17};
+        for (int side = 0; side < 2; side++) {
+            if (cy > -0.52 && cy < -0.34) {
+                double t = (cy + 0.52) / 0.18;
+                double halfW = 0.05 * t;
+                if (cx > hx[side] - halfW && cx < hx[side] + halfW) {
+                    int gray;
+                    if (cy < -0.46)      gray = 30 + (int)(20 * t);
+                    else if (cy < -0.42) gray = 55;
+                    else                 gray = 95;
+                    *out = makeColor(gray, gray * 4 / 5, gray * 3 / 4);
+                    return 1;
+                }
+            }
+        }
+    }
+
     return 0;
 }
 
@@ -1323,6 +1602,7 @@ static void drawMinimap(void)
             else if (ch == '=') c = 0xA04030;
             else if (ch == 'B') c = 0x4060A0;
             else if (ch == 'D') c = 0x805020;
+            else if (ch == 'H') c = 0x602010;
             else c = 0x404040;
             fillRect(mx0 + x * cell, my0 + y * cell, cell - 1, cell - 1, c);
         }
