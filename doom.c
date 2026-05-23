@@ -2268,7 +2268,10 @@ static void audioInit(void)
     if (tryPipe("paplay --raw --format=s16le --rate=22050 --channels=1 "
                 "--latency-msec=80 2>/dev/null") ||
         tryPipe("aplay -q -t raw -f S16_LE -r 22050 -c 1 "
-                "--buffer-time=80000 2>/dev/null")) {
+                "--buffer-time=80000 2>/dev/null") ||
+        /* macOS / BSD with sox: `play` is sox's PCM player */
+        tryPipe("play -q -t raw -r 22050 -c 1 -e signed -b 16 - 2>/dev/null") ||
+        tryPipe("sox -q -t raw -r 22050 -c 1 -e signed -b 16 - -d 2>/dev/null")) {
         g_audioOk = 1;
     }
 }
