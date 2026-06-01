@@ -21,10 +21,22 @@ windowed and `--headless` modes exit cleanly.
 
 ## Features
 
-- DDA raycasting with distance shading and brick-stripe walls
+- DDA raycasting with distance shading and bilinear-filtered procedural textures
+- Smooth, velocity-based player movement with acceleration and friction
 - Imp-style enemy that chases and melees you
 - Pistol with muzzle flash + ammo counter
 - HUD (health, ammo), crosshair, death/win banners
+- Movement-driven weapon bob for visual feedback
+
+## Screenshots
+
+Smooth bilinear-filtered textures (walls, floor, ceiling) and responsive player control:
+
+| | |
+|---|---|
+| ![Brick corridor](screenshot1.png) | ![Interior view](screenshot2.png) |
+
+Textures are procedurally generated with detail (brick mortar, stone cracks, metal rivets, wood grain) and smoothly interpolated to eliminate the blocky nearest-neighbor look. Player movement eases in/out instead of snapping.
 
 ## Building
 
