@@ -48,11 +48,22 @@
 
 #define SCREEN_W       640
 #define SCREEN_H       400
+#define WIN_SCALE      2
 #define MAP_W          16
 #define MAP_H          16
 #define FOV            (M_PI / 3.0)
 #define MAX_DEPTH      24.0
 #define TEX_SIZE       64
+
+/* Player movement feel: velocity is smoothed toward a target each frame so
+ * starts/stops glide instead of snapping. Accel/friction are per-second rates
+ * used as exponential-smoothing factors (higher = snappier). */
+#define MOVE_SPEED     3.0      /* max walk speed (world units / sec)      */
+#define MOVE_ACCEL     14.0     /* how fast velocity ramps toward target   */
+#define MOVE_FRICTION  16.0     /* how fast velocity decays when no input  */
+#define TURN_SPEED     2.7      /* max turn rate (radians / sec)           */
+#define TURN_ACCEL     16.0     /* how fast turn-rate ramps up             */
+#define TURN_FRICTION  18.0     /* how fast turn-rate decays when released */
 #define LEVEL_COUNT    4
 #define MAX_ENEMIES    16
 #define MAX_PARTICLES  192
@@ -109,6 +120,9 @@ static double g_globalTime = 0;
 
 typedef struct {
     double x, y, angle;
+    double vx, vy;      /* world-space velocity (smoothed)   */
+    double va;          /* angular velocity (smoothed turn)  */
+    double bob;         /* view/weapon bob phase accumulator */
     int health;
     int armor;
     int ammo;
@@ -274,6 +288,33 @@ static uint32_t shadeColor(uint32_t c, double mul)
     int r = (int)(((c >> 16) & 0xFF) * mul);
     int g = (int)(((c >> 8)  & 0xFF) * mul);
     int b = (int)(( c        & 0xFF) * mul);
+    return makeColor(r, g, b);
+}
+
+/* Bilinear texture fetch with wrap-around. (u, v) are in texel units; each
+ * TEX_SIZE block tiles seamlessly with itself, so the wrap blends cleanly.
+ * Smooths the blocky nearest-neighbour look of the procedural textures. */
+static uint32_t sampleTexBilinear(const uint32_t *tex, double u, double v)
+{
+    double fu = u - 0.5, fv = v - 0.5;
+    int u0 = (int)floor(fu), v0 = (int)floor(fv);
+    double du = fu - u0, dv = fv - v0;
+
+    int x0 = u0 & (TEX_SIZE - 1), x1 = (u0 + 1) & (TEX_SIZE - 1);
+    int y0 = v0 & (TEX_SIZE - 1), y1 = (v0 + 1) & (TEX_SIZE - 1);
+
+    uint32_t c00 = tex[y0 * TEX_SIZE + x0], c10 = tex[y0 * TEX_SIZE + x1];
+    uint32_t c01 = tex[y1 * TEX_SIZE + x0], c11 = tex[y1 * TEX_SIZE + x1];
+
+    double w00 = (1 - du) * (1 - dv), w10 = du * (1 - dv);
+    double w01 = (1 - du) * dv,       w11 = du * dv;
+
+    int r = (int)(((c00 >> 16) & 0xFF) * w00 + ((c10 >> 16) & 0xFF) * w10 +
+                  ((c01 >> 16) & 0xFF) * w01 + ((c11 >> 16) & 0xFF) * w11);
+    int g = (int)(((c00 >> 8)  & 0xFF) * w00 + ((c10 >> 8)  & 0xFF) * w10 +
+                  ((c01 >> 8)  & 0xFF) * w01 + ((c11 >> 8)  & 0xFF) * w11);
+    int b = (int)(( c00        & 0xFF) * w00 + ( c10        & 0xFF) * w10 +
+                  ( c01        & 0xFF) * w01 + ( c11        & 0xFF) * w11);
     return makeColor(r, g, b);
 }
 
@@ -474,6 +515,8 @@ static void loadLevel(int n)
                 g_player.x = x + 0.5;
                 g_player.y = y + 0.5;
                 g_player.angle = 0.0;
+                g_player.vx = g_player.vy = g_player.va = 0.0;
+                g_player.bob = 0.0;
                 dest = '.';
                 break;
             case 'g':
@@ -606,22 +649,20 @@ static void castColumn(int col)
     else           wallHitX = g_player.x + perpDist * rayDirX;
     wallHitX -= floor(wallHitX);
 
-    int texU = (int)(wallHitX * TEX_SIZE);
-    if (side == 0 && rayDirX > 0) texU = TEX_SIZE - texU - 1;
-    if (side == 1 && rayDirY < 0) texU = TEX_SIZE - texU - 1;
-    if (texU < 0) texU = 0;
-    if (texU >= TEX_SIZE) texU = TEX_SIZE - 1;
+    double texUf = wallHitX * TEX_SIZE;
+    if (side == 0 && rayDirX > 0) texUf = TEX_SIZE - texUf;
+    if (side == 1 && rayDirY < 0) texUf = TEX_SIZE - texUf;
 
     double shade = 1.0 - perpDist / MAX_DEPTH;
     if (shade < 0.18) shade = 0.18;
     if (side == 1) shade *= 0.72;
 
+    const uint32_t *wtex = g_wallTex[wallType];
     double step = (double)TEX_SIZE / lineH;
     double texPos = (clipStart - SCREEN_H / 2 + lineH / 2) * step;
     for (int y = clipStart; y <= clipEnd; y++) {
-        int texV = ((int)texPos) & (TEX_SIZE - 1);
+        uint32_t c = sampleTexBilinear(wtex, texUf, texPos);
         texPos += step;
-        uint32_t c = g_wallTex[wallType][texV * TEX_SIZE + texU];
         g_pixels[y * SCREEN_W + col] = shadeColor(c, shade);
     }
 
@@ -635,18 +676,16 @@ static void castColumn(int col)
         double rowDist = (SCREEN_H * 0.5) / p;
         double floorX = g_player.x + rowDist * rayDirX;
         double floorY = g_player.y + rowDist * rayDirY;
-        int fu = ((int)(floorX * TEX_SIZE)) & (TEX_SIZE - 1);
-        int fv = ((int)(floorY * TEX_SIZE)) & (TEX_SIZE - 1);
-        if (fu < 0) fu += TEX_SIZE;
-        if (fv < 0) fv += TEX_SIZE;
+        double texX = floorX * TEX_SIZE;
+        double texY = floorY * TEX_SIZE;
         double fb = 1.0 - rowDist / MAX_DEPTH;
         if (fb < 0.1) fb = 0.1;
         g_pixels[y * SCREEN_W + col] =
-            shadeColor(g_floorTex[fv * TEX_SIZE + fu], fb);
+            shadeColor(sampleTexBilinear(g_floorTex, texX, texY), fb);
         int cy = SCREEN_H - y - 1;
         if (cy >= 0 && cy < drawStart) {
             g_pixels[cy * SCREEN_W + col] =
-                shadeColor(g_ceilTex[fv * TEX_SIZE + fu], fb * 0.85);
+                shadeColor(sampleTexBilinear(g_ceilTex, texX, texY), fb * 0.85);
         }
     }
 }
@@ -1200,8 +1239,14 @@ static void renderSprites(void)
 
 static void drawWeapon(void)
 {
-    int gx = SCREEN_W / 2;
-    int gy = SCREEN_H - 40;
+    /* Weapon sways with movement: phase tracks distance walked (so it pauses
+     * when standing still) and amplitude scales with current speed. */
+    double sp = sqrt(g_player.vx * g_player.vx + g_player.vy * g_player.vy)
+                / MOVE_SPEED;
+    if (sp > 1.0) sp = 1.0;
+    double ph = g_player.bob * 6.0;
+    int gx = SCREEN_W / 2 + (int)(cos(ph) * 8.0 * sp);
+    int gy = SCREEN_H - 40 + (int)(fabs(sin(ph)) * 7.0 * sp);
 
     /* stock */
     fillRect(gx - 55, gy - 40, 110, 50, 0x281810);
@@ -1652,15 +1697,23 @@ static void drawMinimap(void)
  * Game logic
  * ======================================================================== */
 
-static void tryMove(double nx, double ny)
+/* Attempts to move to (nx, ny), sliding along walls one axis at a time.
+ * Returns a bitmask: bit 0 set if the X move succeeded, bit 1 if Y did. */
+static int tryMove(double nx, double ny)
 {
     double pad = 0.18;
+    int moved = 0;
     if (!mapBlocked((int)(nx + pad), (int)g_player.y) &&
-        !mapBlocked((int)(nx - pad), (int)g_player.y))
+        !mapBlocked((int)(nx - pad), (int)g_player.y)) {
         g_player.x = nx;
+        moved |= 1;
+    }
     if (!mapBlocked((int)g_player.x, (int)(ny + pad)) &&
-        !mapBlocked((int)g_player.x, (int)(ny - pad)))
+        !mapBlocked((int)g_player.x, (int)(ny - pad))) {
         g_player.y = ny;
+        moved |= 2;
+    }
+    return moved;
 }
 
 static void spawnParticle(double x, double y, double vx, double vy,
@@ -1961,24 +2014,53 @@ static void updateGame(double dt)
         return;
     }
 
-    double moveSpeed = 2.6 * dt;
-    double turnSpeed = 2.2 * dt;
     double fx = cos(g_player.angle), fy = sin(g_player.angle);
     double sxv = -sin(g_player.angle), syv = cos(g_player.angle);
 
     if (g_player.health > 0) {
-        if (g_keys[K_FWD])     tryMove(g_player.x + fx  * moveSpeed,
-                                       g_player.y + fy  * moveSpeed);
-        if (g_keys[K_BACK])    tryMove(g_player.x - fx  * moveSpeed,
-                                       g_player.y - fy  * moveSpeed);
-        if (g_keys[K_STRAFEL]) tryMove(g_player.x - sxv * moveSpeed,
-                                       g_player.y - syv * moveSpeed);
-        if (g_keys[K_STRAFER]) tryMove(g_player.x + sxv * moveSpeed,
-                                       g_player.y + syv * moveSpeed);
-        if (g_keys[K_TURNL])   g_player.angle -= turnSpeed;
-        if (g_keys[K_TURNR])   g_player.angle += turnSpeed;
+        /* Build the desired ("wish") move direction from held keys. */
+        double wishX = 0, wishY = 0;
+        if (g_keys[K_FWD])     { wishX += fx;  wishY += fy;  }
+        if (g_keys[K_BACK])    { wishX -= fx;  wishY -= fy;  }
+        if (g_keys[K_STRAFEL]) { wishX -= sxv; wishY -= syv; }
+        if (g_keys[K_STRAFER]) { wishX += sxv; wishY += syv; }
+        double wl = sqrt(wishX * wishX + wishY * wishY);
+
+        /* Target velocity, then smooth current velocity toward it. Releasing
+         * keys lets friction glide the player to a stop instead of snapping. */
+        double tvx = 0, tvy = 0, rate = MOVE_FRICTION;
+        if (wl > 1e-6) {
+            tvx = wishX / wl * MOVE_SPEED;
+            tvy = wishY / wl * MOVE_SPEED;
+            rate = MOVE_ACCEL;
+        }
+        double mk = rate * dt; if (mk > 1.0) mk = 1.0;
+        g_player.vx += (tvx - g_player.vx) * mk;
+        g_player.vy += (tvy - g_player.vy) * mk;
+
+        int moved = tryMove(g_player.x + g_player.vx * dt,
+                            g_player.y + g_player.vy * dt);
+        if (!(moved & 1)) g_player.vx = 0;   /* hit wall: kill that axis */
+        if (!(moved & 2)) g_player.vy = 0;
+
+        /* Advance the bob phase by distance actually travelled. */
+        g_player.bob += sqrt(g_player.vx * g_player.vx +
+                             g_player.vy * g_player.vy) * dt;
+
+        /* Smoothed turning (keyboard) with the same accel/friction model. */
+        double turnWish = 0;
+        if (g_keys[K_TURNL]) turnWish -= 1;
+        if (g_keys[K_TURNR]) turnWish += 1;
+        double tva = turnWish * TURN_SPEED;
+        double trate = (turnWish != 0) ? TURN_ACCEL : TURN_FRICTION;
+        double tk = trate * dt; if (tk > 1.0) tk = 1.0;
+        g_player.va += (tva - g_player.va) * tk;
+        g_player.angle += g_player.va * dt;
 
         if (g_keyEdge[K_SHOOT]) { shoot(); g_keyEdge[K_SHOOT] = 0; }
+    } else {
+        /* Dead: coast velocity to zero so the view settles smoothly. */
+        g_player.vx *= 0.9; g_player.vy *= 0.9; g_player.va *= 0.9;
     }
 
     if (g_keyEdge[K_RESTART] && g_scoreSaved) {
@@ -2481,6 +2563,8 @@ int main(int argc, char **argv)
     XImage *img = NULL;
     Atom wmDelete = 0;
     int screen = 0;
+    int winW = SCREEN_W * WIN_SCALE, winH = SCREEN_H * WIN_SCALE;
+    uint32_t *present = NULL;   /* upscaled framebuffer shown in the window */
 
     if (!headless) {
         dpy = XOpenDisplay(NULL);
@@ -2490,7 +2574,6 @@ int main(int argc, char **argv)
         }
         screen = DefaultScreen(dpy);
         Window root = RootWindow(dpy, screen);
-        int winW = SCREEN_W * 2, winH = SCREEN_H * 2;
         win = XCreateSimpleWindow(dpy, root, 0, 0, winW, winH, 0,
                                   BlackPixel(dpy, screen), BlackPixel(dpy, screen));
         XStoreName(dpy, win, "Doom Clone");
@@ -2502,10 +2585,15 @@ int main(int argc, char **argv)
         XMapWindow(dpy, win);
         gc = XCreateGC(dpy, win, 0, NULL);
 
+        /* X11 (unlike Win32 StretchDIBits) can't scale on blit, so we present
+         * an upscaled copy that fills the whole window instead of a corner. */
+        present = (uint32_t *)malloc((size_t)winW * winH * 4);
+        if (!present) return 1;
+
         Visual *vis = DefaultVisual(dpy, screen);
         int depth = DefaultDepth(dpy, screen);
         img = XCreateImage(dpy, vis, depth, ZPixmap, 0,
-                           (char *)g_pixels, SCREEN_W, SCREEN_H, 32, 0);
+                           (char *)present, winW, winH, 32, 0);
         if (!img) {
             fprintf(stderr, "XCreateImage failed\n");
             return 1;
@@ -2562,21 +2650,41 @@ int main(int argc, char **argv)
         audioTick(dt);
 
         if (!headless) {
-            XPutImage(dpy, win, gc, img, 0, 0, 0, 0, SCREEN_W, SCREEN_H);
+            /* Nearest-neighbour upscale the 640x400 render into the window. */
+            for (int y = 0; y < SCREEN_H; y++) {
+                const uint32_t *src = g_pixels + (size_t)y * SCREEN_W;
+                uint32_t *d0 = present + (size_t)(y * WIN_SCALE) * winW;
+                for (int x = 0; x < SCREEN_W; x++) {
+                    uint32_t c = src[x];
+                    uint32_t *dst = d0 + x * WIN_SCALE;
+                    for (int sy = 0; sy < WIN_SCALE; sy++)
+                        for (int sx = 0; sx < WIN_SCALE; sx++)
+                            dst[sy * winW + sx] = c;
+                }
+            }
+            XPutImage(dpy, win, gc, img, 0, 0, 0, 0, winW, winH);
             XFlush(dpy);
         }
 
         frames++;
         if (maxFrames > 0 && frames >= maxFrames) g_running = 0;
 
-        struct timespec ts = {0, 16 * 1000 * 1000};
-        nanosleep(&ts, NULL);
+        /* Frame pacing: target ~60 FPS and sleep only the leftover slice, so
+         * dt stays consistent frame-to-frame and motion reads as smooth. */
+        double remain = (1.0 / 60.0) - (nowSec() - n);
+        if (remain > 0) {
+            struct timespec ts;
+            ts.tv_sec  = (time_t)remain;
+            ts.tv_nsec = (long)((remain - (double)ts.tv_sec) * 1e9);
+            nanosleep(&ts, NULL);
+        }
     }
 
     audioShutdown();
     if (!headless) {
         img->data = NULL;
         XDestroyImage(img);
+        free(present);
         XFreeGC(dpy, gc);
         XDestroyWindow(dpy, win);
         XCloseDisplay(dpy);
