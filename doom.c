@@ -2561,12 +2561,76 @@ static double nowSec(void)
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
+/* ========================================================================
+ * Self-test: validates level data and exercises a few frames of each level
+ * headlessly. Run with `--selftest`; prints PASS/FAIL and sets exit code.
+ * ======================================================================== */
+
+static int selfTestCheck(int cond, const char *what)
+{
+    if (!cond) fprintf(stderr, "SELFTEST FAIL: %s\n", what);
+    return cond;
+}
+
+static int runSelfTest(void)
+{
+    int ok = 1;
+    static const char *valid = "#=BDH.pgiha";
+
+    for (int n = 0; n < LEVEL_COUNT; n++) {
+        char buf[64];
+
+        int playerCount = 0;
+        for (int y = 0; y < MAP_H; y++) {
+            const char *row = g_levels[n][y];
+            snprintf(buf, sizeof(buf), "level %d row %d length", n, y);
+            ok &= selfTestCheck((int)strlen(row) == MAP_W, buf);
+            for (int x = 0; x < MAP_W; x++) {
+                if (row[x] == 'p') playerCount++;
+                snprintf(buf, sizeof(buf), "level %d (%d,%d) char '%c' is valid",
+                         n, x, y, row[x]);
+                ok &= selfTestCheck(strchr(valid, row[x]) != NULL, buf);
+            }
+        }
+        snprintf(buf, sizeof(buf), "level %d has exactly one player spawn", n);
+        ok &= selfTestCheck(playerCount == 1, buf);
+
+        buildTextures();
+        resetGame();
+        loadLevel(n);
+        g_showIntro = 0;
+
+        snprintf(buf, sizeof(buf), "level %d player spawn is in-bounds", n);
+        ok &= selfTestCheck(g_player.x >= 0 && g_player.x < MAP_W &&
+                            g_player.y >= 0 && g_player.y < MAP_H, buf);
+        snprintf(buf, sizeof(buf), "level %d player does not spawn inside a wall", n);
+        ok &= selfTestCheck(!mapBlocked((int)g_player.x, (int)g_player.y), buf);
+        snprintf(buf, sizeof(buf), "level %d has at least one enemy", n);
+        ok &= selfTestCheck(g_levelEnemyCount > 0, buf);
+
+        for (int f = 0; f < 60; f++) {
+            updateGame(1.0 / 60.0);
+            renderFrame();
+        }
+
+        snprintf(buf, sizeof(buf), "level %d player health stays in range after running", n);
+        ok &= selfTestCheck(g_player.health >= 0 && g_player.health <= 100, buf);
+        snprintf(buf, sizeof(buf), "level %d game keeps running after a few frames", n);
+        ok &= selfTestCheck(g_running == 1, buf);
+    }
+
+    printf(ok ? "SELFTEST PASS (%d levels)\n" : "SELFTEST FAILED\n", LEVEL_COUNT);
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
     int headless = 0;
+    int selftest = 0;
     int maxFrames = -1;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--headless") == 0) headless = 1;
+        else if (strcmp(argv[i], "--selftest") == 0) selftest = 1;
         else if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             maxFrames = atoi(argv[++i]);
         }
@@ -2574,6 +2638,12 @@ int main(int argc, char **argv)
 
     g_pixels = (uint32_t *)calloc((size_t)SCREEN_W * SCREEN_H, 4);
     if (!g_pixels) return 1;
+
+    if (selftest) {
+        int rc = runSelfTest();
+        free(g_pixels);
+        return rc;
+    }
 
     Display *dpy = NULL;
     Window win = 0;
