@@ -99,6 +99,11 @@ and `game` (the central state). The C globals become one `Game` struct.
 
 Notes:
 - Run with `--release`; the debug build's per-pixel work is much slower.
+- On Linux, minifb is built **x11-only** (`default-features = false`,
+  `features = ["x11"]`). This avoids the Wayland dependency chain (which pulls a
+  `getrandom` that needs a very recent toolchain) and needs no X11 dev packages
+  (X11 is loaded at runtime via `dlopen`). X11/XWayland covers Linux and WSLg.
+- `Cargo.lock` is kept at format v3 so older Cargo (back to ~1.75) can read it.
 - Audio uses the same external-player approach as the C version on Unix
   (`paplay`/`aplay`/`play`/`sox`); native Windows `waveOut` is not ported, so
   audio is silent on Windows. Headless runs skip audio entirely.
