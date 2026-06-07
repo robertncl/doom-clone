@@ -1,8 +1,14 @@
 # doom-clone
 
-A minimal DOOM-style raycasting FPS in a single C file. Same source compiles
-for **Windows** (ARM64 / x64 / x86, Win32 + GDI), **Linux / WSL** (X11), and
-**macOS** (X11 via XQuartz) — the platform layer is selected with `#ifdef _WIN32`.
+A minimal DOOM-style raycasting FPS. Available as two implementations that
+share the same gameplay, renderer, levels, bot, and self-test:
+
+- **C** (`doom.c`) — a single translation unit. Compiles for **Windows**
+  (ARM64 / x64 / x86, Win32 + GDI), **Linux / WSL** (X11), and **macOS**
+  (X11 via XQuartz); the platform layer is selected with `#ifdef _WIN32`.
+- **Rust** (`src/`, `Cargo.toml`) — a faithful port organized as a modular
+  Cargo crate, using the [`minifb`](https://crates.io/crates/minifb) crate for
+  the cross-platform window + framebuffer. See [Rust build](#rust).
 
 Verified building and running on aarch64 Ubuntu 24.04 (WSLg) — both
 windowed and `--headless` modes exit cleanly.
@@ -72,6 +78,30 @@ Or with clang from any prompt: `build-x86-clang.bat`
 ```
 
 Requires `libx11-dev` (`sudo apt install libx11-dev` on Debian/Ubuntu).
+
+## Rust
+
+The Rust port lives alongside the C source as a Cargo crate (`src/`,
+`Cargo.toml`) and builds the same `doom` binary with the same flags. It uses
+the cross-platform `minifb` crate for windowing, so it runs on Linux/Windows/
+macOS without per-platform code.
+
+```
+cargo run --release                       # windowed
+cargo run --release -- --headless --frames 120   # smoke test
+cargo run --release -- --selftest         # validate levels
+cargo run --release -- --bot              # watch the AI play
+```
+
+The code is split into focused modules: `render` (raycaster), `sprites`,
+`hud`, `entity` (game logic), `textures`, `level`, `audio`, `bot`, `selftest`,
+and `game` (the central state). The C globals become one `Game` struct.
+
+Notes:
+- Run with `--release`; the debug build's per-pixel work is much slower.
+- Audio uses the same external-player approach as the C version on Unix
+  (`paplay`/`aplay`/`play`/`sox`); native Windows `waveOut` is not ported, so
+  audio is silent on Windows. Headless runs skip audio entirely.
 
 ## Command-line flags
 

@@ -70,7 +70,10 @@ impl Game {
             tex: Textures::build(),
             audio: Audio::new(),
             bot: Bot::default(),
-            rng: 0x1234_5678,
+            rng: std::env::var("DOOM_SEED")
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0x1234_5678),
         }
     }
 
