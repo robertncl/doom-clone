@@ -140,17 +140,14 @@ fn bot_status(g: &Game, frames: u64) {
         .filter(|e| e.alive)
         .count() as i32;
     println!(
-        "[bot] t={:5.1}s  level={}  hp={:3}  ammo={:2}  score={:6}  enemies={}/{}  pos=({:.2},{:.2}) ang={:.2}",
+        "[bot] t={:5.1}s  level={}  hp={:3}  ammo={:2}  score={:6}  enemies={}/{}",
         frames as f64 / 60.0,
         g.level + 1,
         g.player.health,
         g.player.ammo,
         g.score,
         g.level_enemy_count - alive,
-        g.level_enemy_count,
-        g.player.x,
-        g.player.y,
-        g.player.angle
+        g.level_enemy_count
     );
 }
 
