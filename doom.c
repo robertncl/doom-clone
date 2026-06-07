@@ -7,7 +7,7 @@
  *   - Multiple enemy types: grunts (melee) and imps (fireballs)
  *   - Blood/spark particle effects
  *   - Health and ammo pickups
- *   - Three levels with auto-progression
+ *   - Five levels with auto-progression
  *   - Detailed HUD with face indicator
  *
  * Targets ARM64 Windows (Win32 + GDI) and any POSIX system with X11.
@@ -64,7 +64,7 @@
 #define TURN_SPEED     2.7      /* max turn rate (radians / sec)           */
 #define TURN_ACCEL     16.0     /* how fast turn-rate ramps up             */
 #define TURN_FRICTION  18.0     /* how fast turn-rate decays when released */
-#define LEVEL_COUNT    4
+#define LEVEL_COUNT    5
 #define MAX_ENEMIES    16
 #define MAX_PARTICLES  192
 #define MAX_FIREBALLS  16
@@ -253,6 +253,24 @@ static const char *g_levels[LEVEL_COUNT][MAP_H] = {
         "H...H.gg..H....H",
         "H.h.H.....H..a.H",
         "H...HHHHHHHHHHHH",
+        "HHHHHHHHHHHHHHHH",
+    },
+    {
+        "HHHHHHHHHHHHHHHH",
+        "Hp...g....i....H",
+        "H.####.##.####.H",
+        "H.#..=...=..#..H",
+        "H.#.D.....D.#..H",
+        "H.#..=.g.=..#h.H",
+        "H.####.##.####.H",
+        "H..............H",
+        "H.####.##.####.H",
+        "H.#..=.i.=..#..H",
+        "H.#.D.....D.#a.H",
+        "H.#..=.g.=..#..H",
+        "H.####.##.####.H",
+        "H..g........i..H",
+        "H.....a....h...H",
         "HHHHHHHHHHHHHHHH",
     },
 };
