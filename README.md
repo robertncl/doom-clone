@@ -27,6 +27,8 @@ windowed and `--headless` modes exit cleanly.
 - Pistol with muzzle flash + ammo counter
 - HUD (health, ammo), crosshair, death/win banners
 - Movement-driven weapon bob for visual feedback
+- Built-in AI bot (`--bot`) that pathfinds, fights, and clears all five levels
+- Self-test mode (`--selftest`) that validates level geometry and reachability
 
 ## Screenshots
 
@@ -70,6 +72,28 @@ Or with clang from any prompt: `build-x86-clang.bat`
 ```
 
 Requires `libx11-dev` (`sudo apt install libx11-dev` on Debian/Ubuntu).
+
+## Command-line flags
+
+| Flag | Effect |
+| --- | --- |
+| `--headless` | Run the simulation with no window (uses a fixed 60 Hz timestep). |
+| `--frames N` | Stop after `N` frames (handy with `--headless`/`--bot`). |
+| `--bot` | Let the built-in AI play. Works windowed (watch it) or headless. |
+| `--selftest` | Validate every level (geometry, spawns, reachability) and exit 0/1. |
+
+### Bot (AI player)
+
+`--bot` hands the controls to an AI that reads the world state and drives the
+same keys a human would. It BFS-pathfinds around walls, only fires when it has
+line of sight, manages range (closes on far targets, backs off meleeing
+grunts), dodges fireballs, grabs health/ammo when low, and auto-restarts for an
+endless attract-mode demo. Examples:
+
+```
+./doom --bot                              # watch it play in a window
+./doom --headless --bot --frames 10800    # 3 min of play, prints score per second
+```
 
 ### macOS (X11 via XQuartz)
 

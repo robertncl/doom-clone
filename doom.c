@@ -203,7 +203,7 @@ static const char *g_levels[LEVEL_COUNT][MAP_H] = {
     },
     {
         "BBBBBBBBBBBBBBBB",
-        "Bp..B....B.....B",
+        "Bp.......B.....B",
         "B...B....B.g...B",
         "B...D.h..D.....B",
         "B...B....BBBB..B",
@@ -241,16 +241,16 @@ static const char *g_levels[LEVEL_COUNT][MAP_H] = {
         "HHHHHHHHHHHHHHHH",
         "Hp....g........H",
         "H..============H",
-        "H..=...i......aH",
+        "H......i......aH",
         "H..=..HHHHHH...H",
-        "H..=..H.h..H.g.H",
+        "H..=....h..H.g.H",
         "H..====Hgg.H...H",
         "H......H...H...H",
         "H..a...HHHHH...H",
         "H..============H",
         "H..............H",
         "H...HHHHHHH..i.H",
-        "H...H.gg..H....H",
+        "H.....gg..H....H",
         "H.h.H.....H..a.H",
         "H...HHHHHHHHHHHH",
         "HHHHHHHHHHHHHHHH",
@@ -2608,6 +2608,38 @@ static int runSelfTest(void)
         snprintf(buf, sizeof(buf), "level %d has at least one enemy", n);
         ok &= selfTestCheck(g_levelEnemyCount > 0, buf);
 
+        /* Flood-fill walkable cells from spawn, then assert every enemy and
+         * pickup is reachable. A sealed-off enemy can never be killed, so the
+         * level would never clear (allEnemiesDead stays false forever). */
+        {
+            int seen[MAP_H][MAP_W];
+            for (int y = 0; y < MAP_H; y++)
+                for (int x = 0; x < MAP_W; x++) seen[y][x] = 0;
+            int qx[MAP_W * MAP_H], qy[MAP_W * MAP_H], head = 0, tail = 0;
+            int sx = (int)g_player.x, sy = (int)g_player.y;
+            seen[sy][sx] = 1; qx[tail] = sx; qy[tail] = sy; tail++;
+            const int ox[4] = {1, -1, 0, 0}, oy[4] = {0, 0, 1, -1};
+            while (head < tail) {
+                int cx = qx[head], cy = qy[head]; head++;
+                for (int k = 0; k < 4; k++) {
+                    int nx = cx + ox[k], ny = cy + oy[k];
+                    if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) continue;
+                    if (seen[ny][nx] || mapBlocked(nx, ny)) continue;
+                    seen[ny][nx] = 1; qx[tail] = nx; qy[tail] = ny; tail++;
+                }
+            }
+            for (int i = 0; i < MAX_ENEMIES; i++) {
+                if (!g_enemies[i].alive) continue;
+                snprintf(buf, sizeof(buf), "level %d enemy %d is reachable from spawn", n, i);
+                ok &= selfTestCheck(seen[(int)g_enemies[i].y][(int)g_enemies[i].x], buf);
+            }
+            for (int i = 0; i < MAX_PICKUPS; i++) {
+                if (!g_pickups[i].alive) continue;
+                snprintf(buf, sizeof(buf), "level %d pickup %d is reachable from spawn", n, i);
+                ok &= selfTestCheck(seen[(int)g_pickups[i].y][(int)g_pickups[i].x], buf);
+            }
+        }
+
         for (int f = 0; f < 60; f++) {
             updateGame(1.0 / 60.0);
             renderFrame();
@@ -2623,14 +2655,232 @@ static int runSelfTest(void)
     return ok ? 0 : 1;
 }
 
+/* ========================================================================
+ * Bot: an AI that plays the game by driving the same g_keys[]/g_keyEdge[]
+ * a human uses. It reads full world state (player, enemies, pickups, map):
+ *   - BFS pathfinding to route around walls / through mazes
+ *   - line-of-sight gated firing so it never wastes ammo into walls
+ *   - range control: close on far targets, back off meleeing grunts
+ *   - fireball dodging by strafing perpendicular to incoming shots
+ *   - pickup seeking when health/ammo run low
+ *   - stuck recovery, and auto-restart for an endless attract-mode demo
+ * Enable with --bot (works windowed or with --headless --frames N).
+ * ======================================================================== */
+
+/* True if the straight segment a->b is unobstructed by walls. */
+static int botLOS(double ax, double ay, double bx, double by)
+{
+    double dx = bx - ax, dy = by - ay;
+    double d = sqrt(dx * dx + dy * dy);
+    int steps = (int)(d / 0.05) + 1;
+    for (int i = 1; i < steps; i++) {
+        double t = (double)i / steps;
+        if (mapBlocked((int)(ax + dx * t), (int)(ay + dy * t))) return 0;
+    }
+    return 1;
+}
+
+/* BFS distance field (in tiles) from (tx,ty) over all walkable cells. */
+static void botField(int tx, int ty, int field[MAP_H][MAP_W])
+{
+    for (int y = 0; y < MAP_H; y++)
+        for (int x = 0; x < MAP_W; x++) field[y][x] = -1;
+    if (tx < 0 || tx >= MAP_W || ty < 0 || ty >= MAP_H || mapBlocked(tx, ty))
+        return;
+    int qx[MAP_W * MAP_H], qy[MAP_W * MAP_H], head = 0, tail = 0;
+    field[ty][tx] = 0; qx[tail] = tx; qy[tail] = ty; tail++;
+    const int ox[4] = {1, -1, 0, 0}, oy[4] = {0, 0, 1, -1};
+    while (head < tail) {
+        int cx = qx[head], cy = qy[head]; head++;
+        for (int k = 0; k < 4; k++) {
+            int nx = cx + ox[k], ny = cy + oy[k];
+            if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) continue;
+            if (field[ny][nx] != -1 || mapBlocked(nx, ny)) continue;
+            field[ny][nx] = field[cy][cx] + 1;
+            qx[tail] = nx; qy[tail] = ny; tail++;
+        }
+    }
+}
+
+static void botThink(double dt)
+{
+    /* Intro screen: any key edge dismisses it. */
+    if (g_showIntro) { g_keyEdge[K_FWD] = 1; return; }
+
+    /* Game over: pause, then restart to keep the demo running forever. */
+    static double restartT = 0;
+    if (g_scoreSaved) {
+        restartT += dt;
+        if (restartT > 3.0) { g_keyEdge[K_RESTART] = 1; restartT = 0; }
+        return;
+    }
+    restartT = 0;
+
+    /* We fully own the movement keys each frame (no key-release events feed
+     * the bot). Leave QUIT/RESTART edges from real input untouched. */
+    g_keys[K_FWD] = g_keys[K_BACK] = g_keys[K_STRAFEL] = g_keys[K_STRAFER] = 0;
+    g_keys[K_TURNL] = g_keys[K_TURNR] = 0;
+    if (g_player.health <= 0) return;
+
+    double px = g_player.x, py = g_player.y;
+
+    /* Reachability field rooted at the player: pf[cell] >= 0 means we can walk
+     * there. Lets the bot ignore targets sealed behind walls instead of
+     * grinding against a wall forever (it just moves on to a reachable one). */
+    static int pf[MAP_H][MAP_W];
+    botField((int)px, (int)py, pf);
+    #define BOT_REACH(wx, wy) (pf[(int)(wy)][(int)(wx)] >= 0)
+
+    /* ---- Pick a goal: survival pickups first, else nearest enemy, else
+     *      any leftover pickup to tidy up before the level clears. A pickup
+     *      must be reachable; an enemy must be reachable or in direct sight
+     *      (we can still shoot one across a gap we can't walk through). ---- */
+    int goalKind = 0;            /* 0 none, 1 enemy, 2 pickup */
+    double gx = 0, gy = 0, best = 1e9;
+    int lowHP = g_player.health < 40, lowAmmo = g_player.ammo <= 1;
+
+    if (lowHP || lowAmmo) {
+        for (int i = 0; i < MAX_PICKUPS; i++) {
+            if (!g_pickups[i].alive) continue;
+            if (!((lowHP && g_pickups[i].type == PU_HEALTH) ||
+                  (lowAmmo && g_pickups[i].type == PU_AMMO))) continue;
+            if (!BOT_REACH(g_pickups[i].x, g_pickups[i].y)) continue;
+            double dx = g_pickups[i].x - px, dy = g_pickups[i].y - py;
+            double d = dx * dx + dy * dy;
+            if (d < best) { best = d; gx = g_pickups[i].x; gy = g_pickups[i].y; goalKind = 2; }
+        }
+    }
+    if (goalKind == 0) {
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            if (!g_enemies[i].alive) continue;
+            if (!BOT_REACH(g_enemies[i].x, g_enemies[i].y) &&
+                !botLOS(px, py, g_enemies[i].x, g_enemies[i].y)) continue;
+            double dx = g_enemies[i].x - px, dy = g_enemies[i].y - py;
+            double d = dx * dx + dy * dy;
+            if (d < best) { best = d; gx = g_enemies[i].x; gy = g_enemies[i].y; goalKind = 1; }
+        }
+    }
+    if (goalKind == 0) {
+        for (int i = 0; i < MAX_PICKUPS; i++) {
+            if (!g_pickups[i].alive) continue;
+            if (!BOT_REACH(g_pickups[i].x, g_pickups[i].y)) continue;
+            double dx = g_pickups[i].x - px, dy = g_pickups[i].y - py;
+            double d = dx * dx + dy * dy;
+            if (d < best) { best = d; gx = g_pickups[i].x; gy = g_pickups[i].y; goalKind = 2; }
+        }
+    }
+    #undef BOT_REACH
+    if (goalKind == 0) return;   /* nothing reachable; level auto-clears */
+
+    double gdist = sqrt((gx - px) * (gx - px) + (gy - py) * (gy - py));
+    int haveLOS = botLOS(px, py, gx, gy);
+    /* "See" an enemy if there's line-of-sight, or it's point-blank (where the
+     * LOS ray can clip a wall corner and give a false negative). */
+    int seeEnemy = (goalKind == 1 && (haveLOS || gdist < 1.5) && gdist < 9.0);
+
+    /* Steer straight at the goal when visible, else toward the next BFS
+     * waypoint (the adjacent walkable cell closest to the goal). */
+    double aimX, aimY;
+    if (haveLOS) {
+        aimX = gx; aimY = gy;
+    } else {
+        static int field[MAP_H][MAP_W];
+        botField((int)gx, (int)gy, field);
+        int cx = (int)px, cy = (int)py, bestv = field[cy][cx], wx = cx, wy = cy;
+        const int ox[4] = {1, -1, 0, 0}, oy[4] = {0, 0, 1, -1};
+        for (int k = 0; k < 4; k++) {
+            int nx = cx + ox[k], ny = cy + oy[k];
+            if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) continue;
+            if (field[ny][nx] < 0) continue;
+            if (bestv < 0 || field[ny][nx] < bestv) { bestv = field[ny][nx]; wx = nx; wy = ny; }
+        }
+        aimX = wx + 0.5; aimY = wy + 0.5;
+    }
+
+    /* Incoming fireball? Note the perpendicular so we can sidestep it. */
+    int dodge = 0; double dodgeX = 0, dodgeY = 0;
+    for (int i = 0; i < MAX_FIREBALLS; i++) {
+        Fireball *fb = &g_fireballs[i];
+        if (!fb->alive) continue;
+        double rx = px - fb->x, ry = py - fb->y;
+        if (rx * rx + ry * ry > 9.0) continue;       /* too far to matter   */
+        if (fb->vx * rx + fb->vy * ry <= 0) continue; /* heading away        */
+        dodge = 1; dodgeX = -fb->vy; dodgeY = fb->vx; break;
+    }
+
+    /* ---- Decide where to face and a world-space move vector. Keeping the
+     * move vector independent of facing lets the bot back straight away from a
+     * grunt while still spinning to bring it into the crosshair. ---- */
+    double faceX, faceY, mvx = 0, mvy = 0;
+    if (seeEnemy) {
+        faceX = gx; faceY = gy;                       /* aim at the enemy */
+        double ux = (gx - px) / gdist, uy = (gy - py) / gdist;
+        if (gdist > 4.0)      { mvx = ux;  mvy = uy;  }   /* close in   */
+        else if (gdist < 2.2) { mvx = -ux; mvy = -uy; }   /* open up    */
+        /* else hold position in the 2.2..4.0 sweet spot and shoot */
+    } else {
+        faceX = aimX; faceY = aimY;                   /* head to the waypoint/goal */
+        double ax = aimX - px, ay = aimY - py;
+        double al = sqrt(ax * ax + ay * ay);
+        if (al > 1e-6) { mvx = ax / al; mvy = ay / al; }
+    }
+    if (dodge) {            /* fold a strong perpendicular sidestep into the move */
+        double dl = sqrt(dodgeX * dodgeX + dodgeY * dodgeY);
+        if (dl > 1e-6) { mvx += 1.5 * dodgeX / dl; mvy += 1.5 * dodgeY / dl; }
+    }
+
+    /* ---- Turn toward the face target (bang-bang with a small deadzone). ---- */
+    double desired = atan2(faceY - py, faceX - px);
+    double err = desired - g_player.angle;
+    while (err > M_PI)  err -= 2 * M_PI;
+    while (err < -M_PI) err += 2 * M_PI;
+    if (err > 0.05)       g_keys[K_TURNR] = 1;
+    else if (err < -0.05) g_keys[K_TURNL] = 1;
+
+    /* ---- Translate the world move vector into held keys via the player's
+     * forward and strafe axes. ---- */
+    double fx = cos(g_player.angle), fy = sin(g_player.angle);
+    double srx = -sin(g_player.angle), sry = cos(g_player.angle);
+    double fwd = mvx * fx + mvy * fy, str = mvx * srx + mvy * sry;
+    if (fwd >  0.25) g_keys[K_FWD] = 1;
+    else if (fwd < -0.25) g_keys[K_BACK] = 1;
+    if (str >  0.25) g_keys[K_STRAFER] = 1;
+    else if (str < -0.25) g_keys[K_STRAFEL] = 1;
+
+    /* ---- Stuck recovery: if we want to move but aren't, juke for a moment. ---- */
+    static double lx = 0, ly = 0, stuckT = 0, unstuckT = 0;
+    static int flip = 0;
+    double moved = (px - lx) * (px - lx) + (py - ly) * (py - ly);
+    lx = px; ly = py;
+    int wantMove = (mvx * mvx + mvy * mvy) > 1e-6;
+    if (wantMove && moved < 1e-4) stuckT += dt; else stuckT = 0;
+    if (stuckT > 0.35) { unstuckT = 0.5; flip ^= 1; stuckT = 0; }
+    if (unstuckT > 0) {
+        unstuckT -= dt;
+        g_keys[K_FWD] = 1;
+        if (flip) g_keys[K_STRAFER] = 1; else g_keys[K_STRAFEL] = 1;
+    }
+
+    /* ---- Fire when locked on, with a cadence so ammo isn't dumped. ---- */
+    static double fireT = 0;
+    if (fireT > 0) fireT -= dt;
+    if (seeEnemy && g_player.ammo > 0 && fireT <= 0) {
+        double tol = 0.22 / (gdist < 1 ? 1 : gdist);
+        if (tol < 0.04) tol = 0.04;
+        if (fabs(err) <= tol) { g_keyEdge[K_SHOOT] = 1; fireT = 0.16; }
+    }
+}
+
 int main(int argc, char **argv)
 {
     int headless = 0;
     int selftest = 0;
+    int bot = 0;
     int maxFrames = -1;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--headless") == 0) headless = 1;
         else if (strcmp(argv[i], "--selftest") == 0) selftest = 1;
+        else if (strcmp(argv[i], "--bot") == 0) bot = 1;
         else if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             maxFrames = atoi(argv[++i]);
         }
@@ -2729,13 +2979,28 @@ int main(int argc, char **argv)
         }
 
         double n = nowSec();
-        double dt = n - prev;
+        /* Headless runs use a fixed timestep so a bounded --frames run covers a
+         * predictable span of game time (and finishes fast, not in realtime). */
+        double dt = headless ? (1.0 / 60.0) : (n - prev);
         if (dt > 0.05) dt = 0.05;
         prev = n;
+
+        if (bot) botThink(dt);
 
         updateGame(dt);
         renderFrame();
         audioTick(dt);
+
+        if (bot && headless && frames % 60 == 0) {
+            int alive = 0;
+            for (int i = 0; i < g_levelEnemyCount; i++)
+                if (g_enemies[i].alive) alive++;
+            printf("[bot] t=%5.1fs  level=%d  hp=%3d  ammo=%2d  score=%6d  "
+                   "enemies=%d/%d\n",
+                   frames / 60.0, g_level + 1, g_player.health, g_player.ammo,
+                   g_score, g_levelEnemyCount - alive, g_levelEnemyCount);
+            fflush(stdout);
+        }
 
         if (!headless) {
             /* Nearest-neighbour upscale the 640x400 render into the window. */
@@ -2757,6 +3022,8 @@ int main(int argc, char **argv)
         frames++;
         if (maxFrames > 0 && frames >= maxFrames) g_running = 0;
 
+        if (headless) continue;   /* no vsync pacing needed off-screen */
+
         /* Frame pacing: target ~60 FPS and sleep only the leftover slice, so
          * dt stays consistent frame-to-frame and motion reads as smooth. */
         double remain = (1.0 / 60.0) - (nowSec() - n);
@@ -2767,6 +3034,10 @@ int main(int argc, char **argv)
             nanosleep(&ts, NULL);
         }
     }
+
+    if (bot)
+        printf("[bot] done: %d frames, level %d, final score %d\n",
+               frames, g_level + 1, g_score);
 
     audioShutdown();
     if (!headless) {
