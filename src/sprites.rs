@@ -335,6 +335,81 @@ fn imp_pixel(u: f64, v: f64, anim: f64) -> Option<u32> {
     None
 }
 
+/// Health pickup: a 3D-shaded cream medkit with a beveled rim and a shaded red
+/// cross. `u,v` in 0..1; returns `None` outside the rounded-rect body.
+fn health_pixel(u: f64, v: f64, _anim: f64) -> Option<u32> {
+    let cx = u - 0.5;
+    let cy = v - 0.5;
+    let ax = cx.abs();
+    let ay = cy.abs();
+    let (hw, hh, r) = (0.42, 0.42, 0.12);
+    if ax > hw || ay > hh {
+        return None;
+    }
+    if ax > hw - r && ay > hh - r {
+        let (dx, dy) = (ax - (hw - r), ay - (hh - r));
+        if dx * dx + dy * dy > r * r {
+            return None;
+        }
+    }
+    // Red cross, shaded lighter toward the top, with a crisp upper-left edge.
+    if (ax < 0.11 && ay < 0.31) || (ay < 0.11 && ax < 0.31) {
+        let t = (cy + 0.31) / 0.62; // 0 top .. 1 bottom
+        let hi = (ay < 0.31 && (cx + 0.095).abs() < 0.02) || (ax < 0.31 && (cy + 0.095).abs() < 0.02);
+        let rr = (238.0 - 46.0 * t) as i32 + if hi { 16 } else { 0 };
+        let gg = (54.0 - 22.0 * t) as i32 + if hi { 12 } else { 0 };
+        let bb = (46.0 - 20.0 * t) as i32;
+        return Some(make_color(rr.min(255), gg, bb));
+    }
+    // Cream body with a beveled frame (top/left highlight, bottom/right shadow).
+    let hi = cy < -(hh - 0.06) || cx < -(hw - 0.06);
+    let lo = cy > (hh - 0.06) || cx > (hw - 0.06);
+    let grad = (-cx - cy) * 14.0;
+    let base = 224.0 + grad + if hi { 18.0 } else { 0.0 } - if lo { 34.0 } else { 0.0 };
+    Some(make_color(base as i32, (base - 6.0) as i32, (base - 24.0) as i32))
+}
+
+/// Ammo pickup: a beveled olive box with brass-capped shotgun shells poking out
+/// of the top and a hazard stripe. `u,v` in 0..1.
+fn ammo_pixel(u: f64, v: f64, _anim: f64) -> Option<u32> {
+    let cx = u - 0.5;
+    let cy = v - 0.5;
+    let ax = cx.abs();
+    let ay = cy.abs();
+    let (hw, hh, r) = (0.44, 0.34, 0.06);
+    if ax > hw || ay > hh {
+        return None;
+    }
+    if ax > hw - r && ay > hh - r {
+        let (dx, dy) = (ax - (hw - r), ay - (hh - r));
+        if dx * dx + dy * dy > r * r {
+            return None;
+        }
+    }
+    // Shells poking out of the top: brass cap over a red body, cylinder-shaded.
+    if cy > -0.30 && cy < 0.02 && ax < 0.40 {
+        let pitch = 0.158;
+        let sx = (cx + 0.4).rem_euclid(pitch) - pitch * 0.5;
+        if sx.abs() < 0.06 {
+            let round = 1.0 - (sx / 0.06).powi(2) * 0.55; // bright center, dark sides
+            return Some(if cy < -0.15 {
+                make_color((235.0 * round) as i32, (188.0 * round) as i32, (60.0 * round) as i32)
+            } else {
+                make_color((196.0 * round) as i32, (44.0 * round) as i32 + 8, (34.0 * round) as i32 + 6)
+            });
+        }
+        return Some(0x1E2412); // dark gap between shells
+    }
+    // Olive metal box: bevel + a yellow hazard stripe near the bottom.
+    let hi = cy < -(hh - 0.05) || cx < -(hw - 0.05);
+    let lo = cy > (hh - 0.05) || cx > (hw - 0.05);
+    if cy > 0.12 && cy < 0.20 {
+        return Some(make_color(198, 170, 44));
+    }
+    let base = 66.0 + (-cx - cy) * 9.0 + if hi { 16.0 } else { 0.0 } - if lo { 26.0 } else { 0.0 };
+    Some(make_color((base * 0.82) as i32, base as i32, (base * 0.44) as i32))
+}
+
 impl Game {
     fn draw_enemy(&mut self, e: Enemy) {
         let (px, py, ang) = (self.player.x, self.player.y, self.player.angle);
@@ -597,14 +672,40 @@ impl Game {
 #[cfg(test)]
 mod sprite_dump {
     use super::*;
+    // Render a sprite fn with the same 2x2 supersample + dark rim used in-game,
+    // composited over a checker background, so the dump previews the real look.
     fn dump(path: &str, f: impl Fn(f64, f64) -> Option<u32>, n: usize) {
         let mut buf = format!("P6\n{} {}\n255\n", n, n).into_bytes();
         for py in 0..n {
             for px in 0..n {
-                let u = px as f64 / n as f64;
-                let v = py as f64 / n as f64;
+                let (mut rs, mut gs, mut bs, mut cnt) = (0i32, 0i32, 0i32, 0i32);
+                for soy in [0.25f64, 0.75] {
+                    for sox in [0.25f64, 0.75] {
+                        let u = (px as f64 + sox) / n as f64;
+                        let v = (py as f64 + soy) / n as f64;
+                        if let Some(c) = f(u, v) {
+                            rs += ((c >> 16) & 0xFF) as i32;
+                            gs += ((c >> 8) & 0xFF) as i32;
+                            bs += (c & 0xFF) as i32;
+                            cnt += 1;
+                        }
+                    }
+                }
                 let bg = if ((px / 16) + (py / 16)) % 2 == 0 { 0x303034u32 } else { 0x484850 };
-                let c = f(u, v).unwrap_or(bg);
+                let c = if cnt == 0 {
+                    bg
+                } else {
+                    let cov = cnt as f64 / 4.0;
+                    let rim = 0.6 + 0.4 * cov; // darken thin edges into an outline
+                    let sr = (rs / cnt) as f64 * rim;
+                    let sg = (gs / cnt) as f64 * rim;
+                    let sb = (bs / cnt) as f64 * rim;
+                    let blend = |dst: u32, s: f64, sh: u32| {
+                        let d = ((dst >> sh) & 0xFF) as f64;
+                        (d + (s - d) * cov) as i32
+                    };
+                    make_color(blend(bg, sr, 16), blend(bg, sg, 8), blend(bg, sb, 0))
+                };
                 buf.push((c >> 16) as u8);
                 buf.push((c >> 8) as u8);
                 buf.push(c as u8);
@@ -612,41 +713,12 @@ mod sprite_dump {
         }
         std::fs::write(path, buf).unwrap();
     }
-    // Current pickup art, replicated from draw_pickup, for the "before" view.
-    fn health_now(u: f64, v: f64) -> Option<u32> {
-        let (cx, cy) = (u - 0.5, v - 0.5);
-        if cx.abs() < 0.45 && cy.abs() < 0.45 {
-            let mut col = 0xE8E8E8u32;
-            if (cx.abs() < 0.10 && cy.abs() < 0.35) || (cy.abs() < 0.10 && cx.abs() < 0.35) {
-                col = 0xD03020;
-            }
-            if cx.abs() > 0.42 || cy.abs() > 0.42 {
-                col = 0x808080;
-            }
-            return Some(col);
-        }
-        None
-    }
-    fn ammo_now(u: f64, v: f64) -> Option<u32> {
-        let (cx, cy) = (u - 0.5, v - 0.5);
-        if cx.abs() < 0.45 && cy.abs() < 0.30 {
-            let mut col = 0x305020u32;
-            if cy.abs() < 0.06 {
-                col = 0xC0A030;
-            }
-            if cx.abs() > 0.42 || cy.abs() > 0.27 {
-                col = 0x102008;
-            }
-            return Some(col);
-        }
-        None
-    }
     #[test]
     fn dump_sprites() {
         let n = 200;
         dump("/tmp/spr_grunt.ppm", |u, v| grunt_pixel(u, v, 1.0), n);
         dump("/tmp/spr_imp.ppm", |u, v| imp_pixel(u, v, 1.0), n);
-        dump("/tmp/spr_health.ppm", |u, v| health_now(u, v), n);
-        dump("/tmp/spr_ammo.ppm", |u, v| ammo_now(u, v), n);
+        dump("/tmp/spr_health.ppm", |u, v| health_pixel(u, v, 0.0), n);
+        dump("/tmp/spr_ammo.ppm", |u, v| ammo_pixel(u, v, 0.0), n);
     }
 }
