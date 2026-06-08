@@ -411,6 +411,75 @@ fn ammo_pixel(u: f64, v: f64, _anim: f64) -> Option<u32> {
 }
 
 impl Game {
+    /// Composite a billboard sprite onto the framebuffer. Samples `sample(u,v)`
+    /// (u,v in 0..1) with 2x2 supersampling for anti-aliased edges, darkens
+    /// partial-coverage texels into a subtle outline, applies distance `shade`
+    /// (or a white hit `flash`), and alpha-blends over the existing pixel by
+    /// sub-pixel coverage. Very large/near sprites fall back to a single sample
+    /// (their edges are already many pixels thick, so AA buys little and the
+    /// supersample would cost the most there). Columns nearer in the wall `depth`
+    /// buffer occlude the sprite.
+    fn draw_sprite<F: Fn(f64, f64) -> Option<u32>>(
+        &mut self,
+        dsx: i32,
+        dsy: i32,
+        w: i32,
+        h: i32,
+        tx: f64,
+        shade: f64,
+        flash: bool,
+        sample: F,
+    ) {
+        let sx0 = dsx.max(0);
+        let sx1 = (dsx + w).min(SCREEN_W as i32);
+        let sy0 = dsy.max(0);
+        let sy1 = (dsy + h).min(SCREEN_H as i32);
+        let (inv_w, inv_h) = (1.0 / w as f64, 1.0 / h as f64);
+        let offs: &[f64] = if h <= 240 { &[0.25, 0.75] } else { &[0.5] };
+        let nn = (offs.len() * offs.len()) as i32;
+
+        for x in sx0..sx1 {
+            if tx >= self.depth[x as usize] {
+                continue;
+            }
+            for y in sy0..sy1 {
+                let (mut rs, mut gs, mut bs, mut cnt) = (0i32, 0i32, 0i32, 0i32);
+                for &oy in offs {
+                    for &ox in offs {
+                        let u = ((x - dsx) as f64 + ox) * inv_w;
+                        let v = ((y - dsy) as f64 + oy) * inv_h;
+                        if let Some(c) = sample(u, v) {
+                            rs += ((c >> 16) & 0xFF) as i32;
+                            gs += ((c >> 8) & 0xFF) as i32;
+                            bs += (c & 0xFF) as i32;
+                            cnt += 1;
+                        }
+                    }
+                }
+                if cnt == 0 {
+                    continue;
+                }
+                let cov = cnt as f64 / nn as f64;
+                let (sr, sg, sb) = if flash {
+                    (255.0, 240.0, 240.0)
+                } else {
+                    let m = shade * (0.6 + 0.4 * cov); // rim-darken thin edges
+                    ((rs / cnt) as f64 * m, (gs / cnt) as f64 * m, (bs / cnt) as f64 * m)
+                };
+                let idx = y as usize * SCREEN_W + x as usize;
+                let dst = self.pixels[idx];
+                let dr = ((dst >> 16) & 0xFF) as f64;
+                let dg = ((dst >> 8) & 0xFF) as f64;
+                let db = (dst & 0xFF) as f64;
+                self.pixels[idx] = make_color(
+                    (dr + (sr - dr) * cov) as i32,
+                    (dg + (sg - dg) * cov) as i32,
+                    (db + (sb - db) * cov) as i32,
+                );
+            }
+        }
+    }
+
     fn draw_enemy(&mut self, e: Enemy) {
         let (px, py, ang) = (self.player.x, self.player.y, self.player.angle);
         let dx = e.x - px;
@@ -429,35 +498,17 @@ impl Game {
         let sprite_w = sprite_h;
         let dsx = (screen_x - sprite_w as f64 / 2.0) as i32;
         let dsy = -sprite_h / 2 + SCREEN_H as i32 / 2;
-        let sx0 = dsx.max(0);
-        let sx1 = (dsx + sprite_w).min(SCREEN_W as i32);
-        let sy0 = dsy.max(0);
-        let sy1 = (dsy + sprite_h).min(SCREEN_H as i32);
 
-        let mut shade = 1.0 - tx / MAX_DEPTH;
-        if shade < 0.25 {
-            shade = 0.25;
-        }
+        let shade = (1.0 - tx / MAX_DEPTH).max(0.25);
         let flash = e.hit_flash > 0.0;
-
-        for x in sx0..sx1 {
-            if tx >= self.depth[x as usize] {
-                continue;
+        let (anim, kind) = (e.anim, e.kind);
+        self.draw_sprite(dsx, dsy, sprite_w, sprite_h, tx, shade, flash, move |u, v| {
+            if kind == EN_IMP {
+                imp_pixel(u, v, anim)
+            } else {
+                grunt_pixel(u, v, anim)
             }
-            let u = (x - dsx) as f64 / sprite_w as f64;
-            for y in sy0..sy1 {
-                let v = (y - dsy) as f64 / sprite_h as f64;
-                let col = if e.kind == EN_IMP {
-                    imp_pixel(u, v, e.anim)
-                } else {
-                    grunt_pixel(u, v, e.anim)
-                };
-                if let Some(col) = col {
-                    let shaded = if flash { 0xFFF0F0 } else { shade_color(col, shade) };
-                    self.pixels[y as usize * SCREEN_W + x as usize] = shaded;
-                }
-            }
-        }
+        });
     }
 
     fn draw_fireball(&mut self, fb: Fireball) {
@@ -527,58 +578,16 @@ impl Game {
         let dsx = (screen_x - sz as f64 / 2.0) as i32;
         let bob = (self.global_time * 3.0 + p.x + p.y).sin() * (sz as f64 * 0.08);
         let dsy = (SCREEN_H as f64 / 2.0 + sz as f64 * 0.15 + bob) as i32;
-        let sx0 = dsx.max(0);
-        let sx1 = (dsx + sz).min(SCREEN_W as i32);
-        let sy0 = dsy.max(0);
-        let sy1 = (dsy + sz).min(SCREEN_H as i32);
 
-        let mut shade = 1.0 - tx / MAX_DEPTH;
-        if shade < 0.3 {
-            shade = 0.3;
-        }
-
-        for x in sx0..sx1 {
-            if tx >= self.depth[x as usize] {
-                continue;
+        let shade = (1.0 - tx / MAX_DEPTH).max(0.3);
+        let kind = p.kind;
+        self.draw_sprite(dsx, dsy, sz, sz, tx, shade, false, move |u, v| {
+            if kind == PU_HEALTH {
+                health_pixel(u, v, 0.0)
+            } else {
+                ammo_pixel(u, v, 0.0)
             }
-            let u = (x - dsx) as f64 / sz as f64;
-            for y in sy0..sy1 {
-                let v = (y - dsy) as f64 / sz as f64;
-                let cx = u - 0.5;
-                let cy = v - 0.5;
-                let mut col = 0u32;
-                let mut draw = false;
-                if p.kind == PU_HEALTH {
-                    // white kit with red cross
-                    if cx.abs() < 0.45 && cy.abs() < 0.45 {
-                        col = 0xE8E8E8;
-                        draw = true;
-                        if (cx.abs() < 0.10 && cy.abs() < 0.35) || (cy.abs() < 0.10 && cx.abs() < 0.35)
-                        {
-                            col = 0xD03020;
-                        }
-                        if cx.abs() > 0.42 || cy.abs() > 0.42 {
-                            col = 0x808080;
-                        }
-                    }
-                } else {
-                    // ammo box: dark green with yellow strap
-                    if cx.abs() < 0.45 && cy.abs() < 0.30 {
-                        col = 0x305020;
-                        draw = true;
-                        if cy.abs() < 0.06 {
-                            col = 0xC0A030;
-                        }
-                        if cx.abs() > 0.42 || cy.abs() > 0.27 {
-                            col = 0x102008;
-                        }
-                    }
-                }
-                if draw {
-                    self.pixels[y as usize * SCREEN_W + x as usize] = shade_color(col, shade);
-                }
-            }
-        }
+        });
     }
 
     fn draw_particles(&mut self) {
@@ -666,59 +675,5 @@ impl Game {
             }
         }
         self.draw_particles();
-    }
-}
-
-#[cfg(test)]
-mod sprite_dump {
-    use super::*;
-    // Render a sprite fn with the same 2x2 supersample + dark rim used in-game,
-    // composited over a checker background, so the dump previews the real look.
-    fn dump(path: &str, f: impl Fn(f64, f64) -> Option<u32>, n: usize) {
-        let mut buf = format!("P6\n{} {}\n255\n", n, n).into_bytes();
-        for py in 0..n {
-            for px in 0..n {
-                let (mut rs, mut gs, mut bs, mut cnt) = (0i32, 0i32, 0i32, 0i32);
-                for soy in [0.25f64, 0.75] {
-                    for sox in [0.25f64, 0.75] {
-                        let u = (px as f64 + sox) / n as f64;
-                        let v = (py as f64 + soy) / n as f64;
-                        if let Some(c) = f(u, v) {
-                            rs += ((c >> 16) & 0xFF) as i32;
-                            gs += ((c >> 8) & 0xFF) as i32;
-                            bs += (c & 0xFF) as i32;
-                            cnt += 1;
-                        }
-                    }
-                }
-                let bg = if ((px / 16) + (py / 16)) % 2 == 0 { 0x303034u32 } else { 0x484850 };
-                let c = if cnt == 0 {
-                    bg
-                } else {
-                    let cov = cnt as f64 / 4.0;
-                    let rim = 0.6 + 0.4 * cov; // darken thin edges into an outline
-                    let sr = (rs / cnt) as f64 * rim;
-                    let sg = (gs / cnt) as f64 * rim;
-                    let sb = (bs / cnt) as f64 * rim;
-                    let blend = |dst: u32, s: f64, sh: u32| {
-                        let d = ((dst >> sh) & 0xFF) as f64;
-                        (d + (s - d) * cov) as i32
-                    };
-                    make_color(blend(bg, sr, 16), blend(bg, sg, 8), blend(bg, sb, 0))
-                };
-                buf.push((c >> 16) as u8);
-                buf.push((c >> 8) as u8);
-                buf.push(c as u8);
-            }
-        }
-        std::fs::write(path, buf).unwrap();
-    }
-    #[test]
-    fn dump_sprites() {
-        let n = 200;
-        dump("/tmp/spr_grunt.ppm", |u, v| grunt_pixel(u, v, 1.0), n);
-        dump("/tmp/spr_imp.ppm", |u, v| imp_pixel(u, v, 1.0), n);
-        dump("/tmp/spr_health.ppm", |u, v| health_pixel(u, v, 0.0), n);
-        dump("/tmp/spr_ammo.ppm", |u, v| ammo_pixel(u, v, 0.0), n);
     }
 }
