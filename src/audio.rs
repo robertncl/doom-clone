@@ -1,7 +1,7 @@
 //! Software sound synthesis plus output by piping raw PCM to an external player
 //! (`paplay`/`aplay`/`play`/`sox`). If none is found, audio is a silent no-op —
-//! the game runs fine without it. (Native Windows `waveOut` is not ported; on
-//! Windows none of these players exist, so it stays silent.)
+//! the game runs fine without it. (There's no native Windows audio backend, and
+//! none of those players exist on Windows, so audio stays silent there.)
 
 use crate::constants::*;
 use std::io::Write;

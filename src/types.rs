@@ -1,8 +1,7 @@
-//! Plain-old-data entity structs, ported from the C `typedef struct`s.
+//! Plain-old-data entity structs.
 //!
 //! All are `Copy` so we can read one out of an array, mutate the copy, and
-//! write it back — the Rust-friendly equivalent of the C `Enemy *e = &arr[i]`
-//! pointer pattern, without tangling up the borrow checker.
+//! write it back without tangling up the borrow checker.
 
 #[derive(Clone, Copy, Default)]
 pub struct Player {
@@ -58,9 +57,8 @@ pub struct Pickup {
     pub kind: i32, // PU_HEALTH / PU_AMMO
 }
 
-/// Persistent bot state. In the C version these were function-local `static`
-/// variables inside `botThink`; here they live on the game so they survive
-/// across frames (and, like the C statics, across game restarts).
+/// Persistent bot state — kept on the game so it survives across frames and
+/// across game restarts, rather than as locals inside the bot's think step.
 #[derive(Clone, Copy, Default)]
 pub struct Bot {
     pub restart_t: f64,

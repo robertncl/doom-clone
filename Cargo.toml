@@ -2,7 +2,7 @@
 name = "doom-clone"
 version = "0.1.0"
 edition = "2021"
-description = "A DOOM-style raycasting FPS, ported from C to Rust"
+description = "A DOOM-style raycasting FPS written in Rust"
 
 [[bin]]
 name = "doom"

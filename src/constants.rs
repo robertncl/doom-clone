@@ -1,4 +1,4 @@
-//! Compile-time constants, mirroring the `#define`s in the original `doom.c`.
+//! Compile-time constants shared across the game.
 
 pub const SCREEN_W: usize = 640;
 pub const SCREEN_H: usize = 400;

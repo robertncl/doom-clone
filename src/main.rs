@@ -1,4 +1,4 @@
-//! DOOM-style raycasting FPS — a Rust port of the original single-file `doom.c`.
+//! DOOM-style raycasting FPS written in Rust.
 //!
 //! Controls: W/Up move, S/Down back, A/D strafe, Left/Right turn, Space shoot,
 //! R restart (after death), Esc quit.

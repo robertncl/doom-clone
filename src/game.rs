@@ -1,5 +1,5 @@
-//! The central `Game` struct — all the state that lived in C file-scope globals
-//! now lives here — plus map access, movement, RNG, and high-score handling.
+//! The central `Game` struct — all the shared game state lives here, plus
+//! map access, movement, RNG, and high-score handling.
 
 use crate::audio::Audio;
 use crate::constants::*;
