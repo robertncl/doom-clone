@@ -7,7 +7,7 @@ pub const MAP_W: usize = 16;
 pub const MAP_H: usize = 16;
 pub const FOV: f64 = std::f64::consts::PI / 3.0;
 pub const MAX_DEPTH: f64 = 24.0;
-pub const TEX_SIZE: usize = 64;
+pub const TEX_SIZE: usize = 128; // power of two (sampler wrap masks with TEX_SIZE-1)
 
 // Player movement feel: velocity is smoothed toward a target each frame so
 // starts/stops glide instead of snapping. Accel/friction are per-second rates
