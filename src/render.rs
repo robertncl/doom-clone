@@ -1,7 +1,7 @@
 //! Pixel/rect helpers, the DDA raycaster (textured walls + floor/ceiling cast),
 //! the pain-flash post-process, and full-frame composition.
 
-use crate::color::{make_color, sample_tex_bilinear, shade_color};
+use crate::color::{make_color, sample_tex_bilinear_shaded};
 use crate::constants::*;
 use crate::game::Game;
 
@@ -37,13 +37,13 @@ impl Game {
         }
     }
 
-    pub fn cast_column(&mut self, col: usize) {
+    /// Cast one screen column: DDA to the first wall, then draw the textured
+    /// wall band and record its depth. Floor/ceiling are filled separately by
+    /// [`Game::render_floor_ceiling`]. The ray basis (`dir_*`, `plane_*`) is
+    /// constant per frame, so it's computed once in `render_frame` and passed in
+    /// rather than recomputing trig for all 640 columns.
+    pub fn cast_column(&mut self, col: usize, dir_x: f64, dir_y: f64, plane_x: f64, plane_y: f64) {
         let camera_x = 2.0 * col as f64 / SCREEN_W as f64 - 1.0;
-        let dir_x = self.player.angle.cos();
-        let dir_y = self.player.angle.sin();
-        let plane_x = -self.player.angle.sin() * (FOV / 2.0).tan();
-        let plane_y = self.player.angle.cos() * (FOV / 2.0).tan();
-
         let ray_dir_x = dir_x + plane_x * camera_x;
         let ray_dir_y = dir_y + plane_y * camera_x;
 
@@ -131,42 +131,54 @@ impl Game {
             shade *= 0.72;
         }
 
+        let tex = &self.tex.wall[wall_type];
         let step = TEX_SIZE as f64 / line_h as f64;
         let mut tex_pos = (clip_start - SCREEN_H as i32 / 2 + line_h / 2) as f64 * step;
         for y in clip_start..=clip_end {
-            let c = sample_tex_bilinear(&self.tex.wall[wall_type], tex_uf, tex_pos);
-            tex_pos += step;
-            self.pixels[y as usize * SCREEN_W + col] = shade_color(c, shade);
-        }
-
-        // Floor/ceiling cast for rows below the wall (and mirror to above).
-        let mut floor_start = draw_end + 1;
-        if floor_start <= SCREEN_H as i32 / 2 {
-            floor_start = SCREEN_H as i32 / 2 + 1;
-        }
-        if floor_start < 0 {
-            floor_start = 0;
-        }
-        for y in floor_start..SCREEN_H as i32 {
-            let p = y as f64 - SCREEN_H as f64 / 2.0;
-            if p <= 0.0 {
-                continue;
-            }
-            let row_dist = (SCREEN_H as f64 * 0.5) / p;
-            let floor_x = self.player.x + row_dist * ray_dir_x;
-            let floor_y = self.player.y + row_dist * ray_dir_y;
-            let tex_x = floor_x * TEX_SIZE as f64;
-            let tex_y = floor_y * TEX_SIZE as f64;
-            let mut fb = 1.0 - row_dist / MAX_DEPTH;
-            if fb < 0.1 {
-                fb = 0.1;
-            }
             self.pixels[y as usize * SCREEN_W + col] =
-                shade_color(sample_tex_bilinear(&self.tex.floor, tex_x, tex_y), fb);
-            let cy = SCREEN_H as i32 - y - 1;
-            if cy >= 0 && cy < draw_start {
-                self.pixels[cy as usize * SCREEN_W + col] =
-                    shade_color(sample_tex_bilinear(&self.tex.ceil, tex_x, tex_y), fb * 0.85);
+                sample_tex_bilinear_shaded(tex, tex_uf, tex_pos, shade);
+            tex_pos += step;
+        }
+    }
+
+    /// Fill the floor (lower half) and ceiling (upper half) with a per-row cast.
+    /// For a given screen row the camera distance is constant, so the texture
+    /// coordinate steps linearly across the row — one divide per row instead of
+    /// per pixel, and the framebuffer writes run sequentially in memory (vs. the
+    /// old per-column cast that strided by a full row each step). Walls are drawn
+    /// on top afterwards, so over-drawing the wall band here is harmless.
+    pub fn render_floor_ceiling(&mut self, dir_x: f64, dir_y: f64, plane_x: f64, plane_y: f64) {
+        // Disjoint borrows: read textures + player, write the framebuffer.
+        let Game { pixels, tex, player, .. } = self;
+        let (px, py) = (player.x, player.y);
+        let floor = &tex.floor;
+        let ceil = &tex.ceil;
+
+        // Ray directions at the screen edges (camera_x = -1 .. +1).
+        let ray_left_x = dir_x - plane_x;
+        let ray_left_y = dir_y - plane_y;
+        let span_x = 2.0 * plane_x; // ray_right - ray_left, in X
+        let span_y = 2.0 * plane_y;
+        let half_h = SCREEN_H as f64 / 2.0;
+        let inv_w = 1.0 / SCREEN_W as f64;
+
+        for y in (SCREEN_H / 2 + 1)..SCREEN_H {
+            let row_dist = half_h / (y as f64 - half_h);
+            let mut fx = (px + row_dist * ray_left_x) * TEX_SIZE as f64;
+            let mut fy = (py + row_dist * ray_left_y) * TEX_SIZE as f64;
+            let dfx = row_dist * span_x * inv_w * TEX_SIZE as f64;
+            let dfy = row_dist * span_y * inv_w * TEX_SIZE as f64;
+
+            let fb = (1.0 - row_dist / MAX_DEPTH).max(0.1);
+            let fb_ceil = fb * 0.85;
+            let floor_row = y * SCREEN_W;
+            let ceil_row = (SCREEN_H - 1 - y) * SCREEN_W; // mirror above the horizon
+
+            for col in 0..SCREEN_W {
+                pixels[floor_row + col] = sample_tex_bilinear_shaded(floor, fx, fy, fb);
+                pixels[ceil_row + col] = sample_tex_bilinear_shaded(ceil, fx, fy, fb_ceil);
+                fx += dfx;
+                fy += dfy;
             }
         }
     }
@@ -191,8 +203,17 @@ impl Game {
     }
 
     pub fn render_frame(&mut self) {
+        // Ray basis is constant across the frame — compute the trig once here
+        // instead of per column / per floor row.
+        let dir_x = self.player.angle.cos();
+        let dir_y = self.player.angle.sin();
+        let plane_half = (FOV / 2.0).tan();
+        let plane_x = -dir_y * plane_half;
+        let plane_y = dir_x * plane_half;
+
+        self.render_floor_ceiling(dir_x, dir_y, plane_x, plane_y);
         for x in 0..SCREEN_W {
-            self.cast_column(x);
+            self.cast_column(x, dir_x, dir_y, plane_x, plane_y);
         }
         self.render_sprites();
         self.draw_crosshair();

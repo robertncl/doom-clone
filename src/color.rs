@@ -36,39 +36,45 @@ pub fn shade_color(c: u32, mul: f64) -> u32 {
     make_color(r, g, b)
 }
 
-/// Bilinear texture fetch with wrap-around. `(u, v)` are in texel units; each
-/// `TEX_SIZE` block tiles seamlessly with itself, so the wrap blends cleanly.
-/// Smooths the blocky nearest-neighbour look of the procedural textures.
+/// Bilinear texture fetch (wrap-around) **and** distance shading in one integer
+/// fixed-point pass. `(u, v)` are in texel units; each `TEX_SIZE` block tiles
+/// seamlessly so the wrap blends cleanly. `shade` is `0.0..=1.0`.
+///
+/// This replaces `shade_color(sample_tex_bilinear(..))` in the hot wall and
+/// floor/ceiling loops: the four texels are unpacked once and the result packed
+/// once, with no intermediate `f64` color, second clamp, or repack. Sub-texel
+/// and shade fractions are carried as 0..=256 fixed-point weights, so the whole
+/// blend is integer multiply/shift — the channels stay in range by construction.
 #[inline]
-pub fn sample_tex_bilinear(tex: &[u32], u: f64, v: f64) -> u32 {
+pub fn sample_tex_bilinear_shaded(tex: &[u32], u: f64, v: f64, shade: f64) -> u32 {
     let fu = u - 0.5;
     let fv = v - 0.5;
-    let u0 = fu.floor() as i32;
-    let v0 = fv.floor() as i32;
-    let du = fu - u0 as f64;
-    let dv = fv - v0 as f64;
+    let u0 = fu.floor();
+    let v0 = fv.floor();
+    let wu = ((fu - u0) * 256.0) as u32; // sub-texel X, 0..=255
+    let wv = ((fv - v0) * 256.0) as u32; // sub-texel Y, 0..=255
+    let sh = (shade.clamp(0.0, 1.0) * 256.0) as u32; // 0..=256
 
     let mask = (TEX_SIZE - 1) as i32;
-    let x0 = (u0 & mask) as usize;
-    let x1 = ((u0 + 1) & mask) as usize;
-    let y0 = (v0 & mask) as usize;
-    let y1 = ((v0 + 1) & mask) as usize;
+    let x0 = (u0 as i32 & mask) as usize;
+    let x1 = ((u0 as i32 + 1) & mask) as usize;
+    let row0 = (v0 as i32 & mask) as usize * TEX_SIZE;
+    let row1 = ((v0 as i32 + 1) & mask) as usize * TEX_SIZE;
 
-    let c00 = tex[y0 * TEX_SIZE + x0];
-    let c10 = tex[y0 * TEX_SIZE + x1];
-    let c01 = tex[y1 * TEX_SIZE + x0];
-    let c11 = tex[y1 * TEX_SIZE + x1];
+    let c00 = tex[row0 + x0];
+    let c10 = tex[row0 + x1];
+    let c01 = tex[row1 + x0];
+    let c11 = tex[row1 + x1];
 
-    let w00 = (1.0 - du) * (1.0 - dv);
-    let w10 = du * (1.0 - dv);
-    let w01 = (1.0 - du) * dv;
-    let w11 = du * dv;
-
-    let chan = |shift: u32| -> i32 {
-        (((c00 >> shift) & 0xFF) as f64 * w00
-            + ((c10 >> shift) & 0xFF) as f64 * w10
-            + ((c01 >> shift) & 0xFF) as f64 * w01
-            + ((c11 >> shift) & 0xFF) as f64 * w11) as i32
+    let iwu = 256 - wu;
+    let iwv = 256 - wv;
+    // Per channel: blend the two rows in X, blend those in Y (>>16 → 0..=255),
+    // then apply shade (* sh >> 8 → 0..=255).
+    let blend = |shift: u32| -> u32 {
+        let top = ((c00 >> shift) & 0xFF) * iwu + ((c10 >> shift) & 0xFF) * wu;
+        let bot = ((c01 >> shift) & 0xFF) * iwu + ((c11 >> shift) & 0xFF) * wu;
+        let val = (top * iwv + bot * wv) >> 16;
+        (val * sh) >> 8
     };
-    make_color(chan(16), chan(8), chan(0))
+    (blend(16) << 16) | (blend(8) << 8) | blend(0)
 }
