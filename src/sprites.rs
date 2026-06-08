@@ -593,3 +593,60 @@ impl Game {
         self.draw_particles();
     }
 }
+
+#[cfg(test)]
+mod sprite_dump {
+    use super::*;
+    fn dump(path: &str, f: impl Fn(f64, f64) -> Option<u32>, n: usize) {
+        let mut buf = format!("P6\n{} {}\n255\n", n, n).into_bytes();
+        for py in 0..n {
+            for px in 0..n {
+                let u = px as f64 / n as f64;
+                let v = py as f64 / n as f64;
+                let bg = if ((px / 16) + (py / 16)) % 2 == 0 { 0x303034u32 } else { 0x484850 };
+                let c = f(u, v).unwrap_or(bg);
+                buf.push((c >> 16) as u8);
+                buf.push((c >> 8) as u8);
+                buf.push(c as u8);
+            }
+        }
+        std::fs::write(path, buf).unwrap();
+    }
+    // Current pickup art, replicated from draw_pickup, for the "before" view.
+    fn health_now(u: f64, v: f64) -> Option<u32> {
+        let (cx, cy) = (u - 0.5, v - 0.5);
+        if cx.abs() < 0.45 && cy.abs() < 0.45 {
+            let mut col = 0xE8E8E8u32;
+            if (cx.abs() < 0.10 && cy.abs() < 0.35) || (cy.abs() < 0.10 && cx.abs() < 0.35) {
+                col = 0xD03020;
+            }
+            if cx.abs() > 0.42 || cy.abs() > 0.42 {
+                col = 0x808080;
+            }
+            return Some(col);
+        }
+        None
+    }
+    fn ammo_now(u: f64, v: f64) -> Option<u32> {
+        let (cx, cy) = (u - 0.5, v - 0.5);
+        if cx.abs() < 0.45 && cy.abs() < 0.30 {
+            let mut col = 0x305020u32;
+            if cy.abs() < 0.06 {
+                col = 0xC0A030;
+            }
+            if cx.abs() > 0.42 || cy.abs() > 0.27 {
+                col = 0x102008;
+            }
+            return Some(col);
+        }
+        None
+    }
+    #[test]
+    fn dump_sprites() {
+        let n = 200;
+        dump("/tmp/spr_grunt.ppm", |u, v| grunt_pixel(u, v, 1.0), n);
+        dump("/tmp/spr_imp.ppm", |u, v| imp_pixel(u, v, 1.0), n);
+        dump("/tmp/spr_health.ppm", |u, v| health_now(u, v), n);
+        dump("/tmp/spr_ammo.ppm", |u, v| ammo_now(u, v), n);
+    }
+}
