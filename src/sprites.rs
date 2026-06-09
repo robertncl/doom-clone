@@ -410,6 +410,42 @@ fn ammo_pixel(u: f64, v: f64, _anim: f64) -> Option<u32> {
     Some(make_color((base * 0.82) as i32, base as i32, (base * 0.44) as i32))
 }
 
+/// Weapon pickup: a side-on gun silhouette resting on the floor — a metal
+/// barrel over a tinted body and grip. The body tint distinguishes the kind
+/// (brown for the shotgun, olive-green for the rifle). `u,v` in 0..1.
+fn weapon_pixel(u: f64, v: f64, kind: i32) -> Option<u32> {
+    let cx = u - 0.5;
+    let cy = v - 0.5;
+    // Body tint per weapon: (mid, highlight).
+    let (body, hilite) = if kind == PU_RIFLE {
+        (0x2E3A24, 0x46583A) // green
+    } else {
+        (0x4A2E18, 0x6A4524) // wood brown (shotgun)
+    };
+    // Metal barrel: a horizontal bar across the upper half, cylinder-shaded.
+    if cy > -0.20 && cy < -0.02 && cx > -0.44 && cx < 0.40 {
+        let round = 1.0 - ((cy + 0.11) / 0.09).abs() * 0.45;
+        let g = (150.0 * round) as i32;
+        return Some(make_color(g, g, g));
+    }
+    // Receiver / body block.
+    if cy >= -0.02 && cy < 0.14 && cx > -0.34 && cx < 0.34 {
+        return Some(if cy < 0.05 { hilite } else { body });
+    }
+    // Trigger guard.
+    if cx > -0.06 && cx < 0.12 && cy >= 0.14 && cy < 0.24 {
+        return Some(0x1A1A1A);
+    }
+    // Grip, angled down to the right.
+    if cy >= 0.10 && cy < 0.42 {
+        let gx = 0.18 + (cy - 0.10) * 0.35;
+        if cx > gx - 0.11 && cx < gx + 0.07 {
+            return Some(if cx < gx - 0.04 { hilite } else { body });
+        }
+    }
+    None
+}
+
 impl Game {
     /// Composite a billboard sprite onto the framebuffer. Samples `sample(u,v)`
     /// (u,v in 0..1) with 2x2 supersampling for anti-aliased edges, darkens
@@ -581,12 +617,10 @@ impl Game {
 
         let shade = (1.0 - tx / MAX_DEPTH).max(0.3);
         let kind = p.kind;
-        self.draw_sprite(dsx, dsy, sz, sz, tx, shade, false, move |u, v| {
-            if kind == PU_HEALTH {
-                health_pixel(u, v, 0.0)
-            } else {
-                ammo_pixel(u, v, 0.0)
-            }
+        self.draw_sprite(dsx, dsy, sz, sz, tx, shade, false, move |u, v| match kind {
+            PU_HEALTH => health_pixel(u, v, 0.0),
+            PU_AMMO => ammo_pixel(u, v, 0.0),
+            _ => weapon_pixel(u, v, kind),
         });
     }
 

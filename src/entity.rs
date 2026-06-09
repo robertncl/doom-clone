@@ -250,9 +250,32 @@ impl Game {
         self.muzzle_flash = 5;
         self.audio.play(SND_SHOOT);
 
-        // Find nearest enemy along the aim ray within angular tolerance.
-        let rx = self.player.angle.cos();
-        let ry = self.player.angle.sin();
+        // Per-weapon fire pattern: (pellet count, half-spread radians, damage).
+        // The pistol is a balanced single shot; the shotgun sprays several
+        // low-damage pellets; the rifle is a single high-damage, pinpoint shot.
+        let (pellets, spread, dmg) = match self.player.weapon {
+            WP_SHOTGUN => (5, 0.13, 1),
+            WP_RIFLE => (1, 0.0, 3),
+            _ => (1, 0.0, 1),
+        };
+        for k in 0..pellets {
+            // First pellet is always dead-center, so the shotgun is never worse
+            // than the pistol against a point target; the rest fan out evenly.
+            let off = if pellets == 1 || k == 0 {
+                0.0
+            } else {
+                ((k as f64) / (pellets as f64 - 1.0) - 0.5) * 2.0 * spread
+            };
+            self.fire_ray(off, dmg);
+        }
+    }
+
+    /// Trace one hitscan pellet at `angle_off` from the aim direction, stopping
+    /// at the nearest wall and damaging the nearest enemy along it by `dmg`.
+    fn fire_ray(&mut self, angle_off: f64, dmg: i32) {
+        let ang = self.player.angle + angle_off;
+        let rx = ang.cos();
+        let ry = ang.sin();
 
         // Wall stop distance
         let mut wall_t = 0.0;
@@ -278,19 +301,19 @@ impl Game {
             let dx = e.x - self.player.x;
             let dy = e.y - self.player.y;
             let d = (dx * dx + dy * dy).sqrt();
-            let mut ang = dy.atan2(dx) - self.player.angle;
-            while ang > PI {
-                ang -= 2.0 * PI;
+            let mut a = dy.atan2(dx) - ang;
+            while a > PI {
+                a -= 2.0 * PI;
             }
-            while ang < -PI {
-                ang += 2.0 * PI;
+            while a < -PI {
+                a += 2.0 * PI;
             }
             // angular tolerance shrinks with distance
             let mut tol = 0.22 / (if d < 1.0 { 1.0 } else { d });
             if tol < 0.04 {
                 tol = 0.04;
             }
-            if ang.abs() > tol {
+            if a.abs() > tol {
                 continue;
             }
             if d < best_dist {
@@ -300,7 +323,7 @@ impl Game {
         }
         if best_idx >= 0 {
             let i = best_idx as usize;
-            self.enemies[i].hp -= 1;
+            self.enemies[i].hp -= dmg;
             self.enemies[i].hit_flash = 0.15;
             let (ex, ey, kind, hp) =
                 (self.enemies[i].x, self.enemies[i].y, self.enemies[i].kind, self.enemies[i].hp);
@@ -419,6 +442,17 @@ impl Game {
             if self.key_edge[K_SHOOT] {
                 self.shoot();
                 self.key_edge[K_SHOOT] = false;
+            }
+
+            // Direct weapon select (1/2/3) — only switches to owned weapons.
+            for (key, wp) in [(K_WEAPON1, WP_PISTOL), (K_WEAPON2, WP_SHOTGUN), (K_WEAPON3, WP_RIFLE)]
+            {
+                if self.key_edge[key] {
+                    if self.player.weapons[wp as usize] {
+                        self.player.weapon = wp;
+                    }
+                    self.key_edge[key] = false;
+                }
             }
         } else {
             // Dead: coast velocity to zero so the view settles smoothly.

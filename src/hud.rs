@@ -120,6 +120,59 @@ impl Game {
         let gx = SCREEN_W as i32 / 2 + (ph.cos() * 8.0 * sp) as i32;
         let gy = SCREEN_H as i32 - 40 + (ph.sin().abs() * 7.0 * sp) as i32;
 
+        // Each gun draws itself and reports where its muzzle tip is, so the
+        // flash lines up regardless of barrel length.
+        let (fx, fy) = match self.player.weapon {
+            WP_SHOTGUN => self.draw_shotgun(gx, gy),
+            WP_RIFLE => self.draw_rifle(gx, gy),
+            _ => self.draw_pistol(gx, gy),
+        };
+
+        if self.muzzle_flash > 0 {
+            for y in -25..18 {
+                for x in -32..32 {
+                    let d2 = x * x + y * y;
+                    if d2 > 700 {
+                        continue;
+                    }
+                    let d = (d2 as f64).sqrt() as i32;
+                    let v = 255 - d * 9;
+                    if v < 0 {
+                        continue;
+                    }
+                    let r = v;
+                    let g_c = if v > 180 { v } else { v * 7 / 10 };
+                    let b = v / 6;
+                    self.put_pixel(fx + x, fy + y, make_color(r, g_c, b));
+                }
+            }
+        }
+    }
+
+    /// Pistol: a compact handgun. Returns the muzzle tip for the flash.
+    fn draw_pistol(&mut self, gx: i32, gy: i32) -> (i32, i32) {
+        // grip
+        self.fill_rect(gx - 16, gy - 30, 32, 40, 0x402818);
+        self.fill_rect(gx - 16, gy - 30, 32, 4, 0x60381C);
+        self.fill_rect(gx - 16, gy - 2, 32, 4, 0x18100A);
+        // slide / frame
+        self.fill_rect(gx - 20, gy - 58, 40, 30, 0x383838);
+        self.fill_rect(gx - 20, gy - 58, 40, 4, 0x585858);
+        self.fill_rect(gx - 20, gy - 32, 40, 4, 0x181818);
+        // barrel
+        self.fill_rect(gx - 7, gy - 78, 14, 22, 0x202020);
+        self.fill_rect(gx - 7, gy - 78, 4, 22, 0x404040);
+        self.fill_rect(gx + 3, gy - 78, 4, 22, 0x101010);
+        // muzzle + sight
+        self.fill_rect(gx - 9, gy - 82, 18, 5, 0x101010);
+        self.fill_rect(gx - 1, gy - 84, 2, 4, 0xC0C0C0);
+        // trigger guard
+        self.fill_rect(gx - 7, gy - 26, 14, 10, 0x202020);
+        (gx, gy - 84)
+    }
+
+    /// Shotgun: the chunky pump-action (the game's original first-person gun).
+    fn draw_shotgun(&mut self, gx: i32, gy: i32) -> (i32, i32) {
         // stock
         self.fill_rect(gx - 55, gy - 40, 110, 50, 0x281810);
         self.fill_rect(gx - 55, gy - 40, 110, 4, 0x60381C);
@@ -141,28 +194,36 @@ impl Game {
         self.fill_rect(gx - 1, gy - 116, 2, 4, 0xC0C0C0);
         // trigger guard
         self.fill_rect(gx - 8, gy - 30, 16, 12, 0x202020);
+        (gx, gy - 116)
+    }
 
-        if self.muzzle_flash > 0 {
-            let fx = gx;
-            let fy = gy - 116;
-            for y in -25..18 {
-                for x in -32..32 {
-                    let d2 = x * x + y * y;
-                    if d2 > 700 {
-                        continue;
-                    }
-                    let d = (d2 as f64).sqrt() as i32;
-                    let v = 255 - d * 9;
-                    if v < 0 {
-                        continue;
-                    }
-                    let r = v;
-                    let g_c = if v > 180 { v } else { v * 7 / 10 };
-                    let b = v / 6;
-                    self.put_pixel(fx + x, fy + y, make_color(r, g_c, b));
-                }
-            }
+    /// Rifle: a long-barreled tactical rifle with a magazine and handguard vents.
+    fn draw_rifle(&mut self, gx: i32, gy: i32) -> (i32, i32) {
+        // stock (dark green polymer)
+        self.fill_rect(gx - 50, gy - 34, 100, 44, 0x23301E);
+        self.fill_rect(gx - 50, gy - 34, 100, 4, 0x3C5030);
+        self.fill_rect(gx - 50, gy - 2, 100, 4, 0x101810);
+        // receiver
+        self.fill_rect(gx - 42, gy - 56, 84, 24, 0x2E2E2E);
+        self.fill_rect(gx - 42, gy - 56, 84, 4, 0x4E4E4E);
+        self.fill_rect(gx - 42, gy - 36, 84, 4, 0x141414);
+        // magazine
+        self.fill_rect(gx - 6, gy - 30, 16, 36, 0x181818);
+        self.fill_rect(gx - 6, gy - 30, 4, 36, 0x303030);
+        // long barrel
+        self.fill_rect(gx - 6, gy - 128, 12, 74, 0x1C1C1C);
+        self.fill_rect(gx - 6, gy - 128, 4, 74, 0x383838);
+        self.fill_rect(gx + 2, gy - 128, 4, 74, 0x0C0C0C);
+        // handguard vents
+        for i in 0..4 {
+            self.fill_rect(gx - 9, gy - 116 + i * 12, 18, 5, 0x141414);
         }
+        // muzzle + front sight post
+        self.fill_rect(gx - 9, gy - 132, 18, 6, 0x0A0A0A);
+        self.fill_rect(gx - 1, gy - 140, 2, 8, 0xB0B0B0);
+        // trigger guard
+        self.fill_rect(gx - 8, gy - 30, 16, 10, 0x202020);
+        (gx, gy - 134)
     }
 
     fn draw_face(&mut self, x: i32, y: i32, hp: i32) {
@@ -260,6 +321,15 @@ impl Game {
         // Ammo
         self.draw_text("AMMO", SCREEN_W as i32 - 80, bar_y + 6, 0xC0A080);
         self.draw_number(self.player.ammo, SCREEN_W as i32 - 80, bar_y + 18, 0xE0E060);
+
+        // Current weapon
+        let wname = match self.player.weapon {
+            WP_SHOTGUN => "SHOTGUN",
+            WP_RIFLE => "RIFLE",
+            _ => "PISTOL",
+        };
+        self.draw_text("WEAPON", 120, bar_y + 6, 0xC0A080);
+        self.draw_text(wname, 120, bar_y + 18, 0x80C0E0);
 
         // Level + kills
         let alive = self.enemies[..self.level_enemy_count.max(0) as usize]
