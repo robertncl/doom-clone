@@ -158,6 +158,11 @@ impl Game {
                 if !p.alive {
                     continue;
                 }
+                // The bot only values consumables (health/ammo); weapon pickups
+                // are a player convenience it never detours for.
+                if p.kind != PU_HEALTH && p.kind != PU_AMMO {
+                    continue;
+                }
                 if !reach(p.x, p.y) {
                     continue;
                 }
