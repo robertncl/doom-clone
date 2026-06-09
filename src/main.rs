@@ -37,6 +37,9 @@ const KEYMAP: &[(usize, &[Key])] = &[
     (K_SHOOT, &[Key::Space]),
     (K_RESTART, &[Key::R]),
     (K_QUIT, &[Key::Escape]),
+    (K_WEAPON1, &[Key::Key1]),
+    (K_WEAPON2, &[Key::Key2]),
+    (K_WEAPON3, &[Key::Key3]),
 ];
 
 fn main() {
