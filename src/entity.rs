@@ -211,23 +211,31 @@ impl Game {
             let dy = self.pickups[i].y - self.player.y;
             if dx * dx + dy * dy < 0.25 {
                 let (px, py, kind) = (self.pickups[i].x, self.pickups[i].y, self.pickups[i].kind);
-                if kind == PU_HEALTH {
-                    self.player.health += 25;
-                    if self.player.health > 100 {
-                        self.player.health = 100;
+                let color = match kind {
+                    PU_HEALTH => {
+                        self.player.health = (self.player.health + 25).min(100);
+                        self.audio.play(SND_PICKUP_HEALTH);
+                        0xFFC0C0
                     }
-                    self.audio.play(SND_PICKUP_HEALTH);
-                } else {
-                    self.player.ammo += 12;
-                    if self.player.ammo > 99 {
-                        self.player.ammo = 99;
+                    PU_AMMO => {
+                        self.player.ammo = (self.player.ammo + 12).min(99);
+                        self.audio.play(SND_PICKUP_AMMO);
+                        0xFFE060
                     }
-                    self.audio.play(SND_PICKUP_AMMO);
-                }
+                    _ => {
+                        // Weapon pickup: own it, auto-equip it, and throw in a
+                        // little ammo so it's immediately useful.
+                        let wp = if kind == PU_RIFLE { WP_RIFLE } else { WP_SHOTGUN };
+                        self.player.weapons[wp as usize] = true;
+                        self.player.weapon = wp;
+                        self.player.ammo = (self.player.ammo + 8).min(99);
+                        self.audio.play(SND_PICKUP_WEAPON);
+                        if kind == PU_RIFLE { 0x80FF80 } else { 0xFFB060 }
+                    }
+                };
                 self.pickups[i].alive = false;
                 for _ in 0..8 {
                     let a = self.rand_f64() * 2.0 * PI;
-                    let color = if kind == PU_HEALTH { 0xFFC0C0 } else { 0xFFE060 };
                     self.spawn_particle(px, py, a.cos() * 0.3, a.sin() * 0.3, 0.4, color);
                 }
             }
