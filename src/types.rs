@@ -15,6 +15,8 @@ pub struct Player {
     pub health: i32,
     pub armor: i32,
     pub ammo: i32,
+    pub weapon: i32,         // currently equipped WP_*
+    pub weapons: [bool; 3],  // which WP_* the player owns (index by WP_*)
 }
 
 #[derive(Clone, Copy, Default)]

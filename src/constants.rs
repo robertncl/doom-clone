@@ -37,7 +37,10 @@ pub const K_TURNR: usize = 5;
 pub const K_SHOOT: usize = 6;
 pub const K_RESTART: usize = 7;
 pub const K_QUIT: usize = 8;
-pub const K_COUNT: usize = 9;
+pub const K_WEAPON1: usize = 9; // select pistol
+pub const K_WEAPON2: usize = 10; // select shotgun
+pub const K_WEAPON3: usize = 11; // select rifle
+pub const K_COUNT: usize = 12;
 
 // Wall kinds (old `WALL_*` enum). Index 0 = none (empty space).
 pub const WALL_NONE: usize = 0;
@@ -53,6 +56,15 @@ pub const EN_GRUNT: i32 = 0;
 pub const EN_IMP: i32 = 1;
 pub const PU_HEALTH: i32 = 0;
 pub const PU_AMMO: i32 = 1;
+pub const PU_SHOTGUN: i32 = 2;
+pub const PU_RIFLE: i32 = 3;
+
+// Weapon kinds (the player's equipped gun). The pistol is the starting weapon;
+// the shotgun and rifle are found as pickups.
+pub const WP_PISTOL: i32 = 0;
+pub const WP_SHOTGUN: i32 = 1;
+pub const WP_RIFLE: i32 = 2;
+pub const WP_COUNT: usize = 3;
 
 // Sound kinds (old `SND_*` enum).
 pub const SND_SHOOT: usize = 0;
@@ -64,4 +76,5 @@ pub const SND_FIREBALL: usize = 5;
 pub const SND_PLAYER_HURT: usize = 6;
 pub const SND_LEVEL_CLEAR: usize = 7;
 pub const SND_GAME_OVER: usize = 8;
-pub const SND_KIND_MAX: usize = 9;
+pub const SND_PICKUP_WEAPON: usize = 9;
+pub const SND_KIND_MAX: usize = 10;
