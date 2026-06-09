@@ -92,19 +92,6 @@ fn main() {
             g.load_level(shot_level.min(LEVEL_COUNT - 1));
         }
         g.show_intro = false;
-        if let Ok(w) = std::env::var("DOOM_DBG_WEAPON") {
-            g.player.weapon = w.parse().unwrap_or(0);
-        }
-        if let Ok(a) = std::env::var("DOOM_DBG_ANGLE") {
-            g.player.angle = a.parse().unwrap_or(0.0);
-        }
-        if let Ok(p) = std::env::var("DOOM_DBG_POS") {
-            let parts: Vec<f64> = p.split(',').filter_map(|s| s.parse().ok()).collect();
-            if parts.len() == 2 {
-                g.player.x = parts[0];
-                g.player.y = parts[1];
-            }
-        }
         g.render_frame();
         write_ppm(&path, &g.pixels);
         return;
