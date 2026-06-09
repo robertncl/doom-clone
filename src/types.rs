@@ -56,7 +56,7 @@ pub struct Pickup {
     pub x: f64,
     pub y: f64,
     pub alive: bool,
-    pub kind: i32, // PU_HEALTH / PU_AMMO
+    pub kind: i32, // PU_HEALTH / PU_AMMO / PU_SHOTGUN / PU_RIFLE
 }
 
 /// Persistent bot state — kept on the game so it survives across frames and

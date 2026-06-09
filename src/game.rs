@@ -124,6 +124,8 @@ impl Game {
         self.player.health = 100;
         self.player.armor = 0;
         self.player.ammo = 50;
+        self.player.weapon = WP_PISTOL;
+        self.player.weapons = [true, false, false]; // start with the pistol only
         self.score = 0;
         self.score_saved = false;
         self.final_rank = 0;
