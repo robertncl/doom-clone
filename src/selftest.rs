@@ -15,7 +15,7 @@ fn check(ok: &mut bool, cond: bool, what: &str) {
 
 pub fn run_self_test() -> i32 {
     let mut ok = true;
-    let valid = "#=BDH.pgiha";
+    let valid = "#=BDH.pgihasr";
     let mut g = Game::new();
 
     for n in 0..LEVEL_COUNT {

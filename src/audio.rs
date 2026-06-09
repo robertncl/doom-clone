@@ -11,7 +11,8 @@ const AUDIO_RATE: f64 = 22050.0;
 const MAX_SOUNDS: usize = 16;
 const AUDIO_BUF_MAX: usize = 4096;
 
-const SOUND_DUR: [f64; SND_KIND_MAX] = [0.20, 0.15, 0.50, 0.30, 0.25, 0.35, 0.35, 0.90, 1.60];
+const SOUND_DUR: [f64; SND_KIND_MAX] =
+    [0.20, 0.15, 0.50, 0.30, 0.25, 0.35, 0.35, 0.90, 1.60, 0.40];
 
 #[derive(Clone, Copy, Default)]
 struct ActiveSound {
@@ -96,6 +97,13 @@ fn sound_sample(kind: usize, t: f64, seed: &mut u32) -> f64 {
             let env = (-t * 0.8).exp();
             let freq = 220.0 * 0.5f64.powf(t / 0.7);
             (t * freq * tau).sin() * env * 0.8
+        }
+        SND_PICKUP_WEAPON => {
+            // A confident rising two-note chime — heavier than the ammo blip.
+            let env = (-t * 5.0).exp();
+            let freq = if t < 0.12 { 500.0 } else { 750.0 };
+            let click = ((audio_noise(seed) >> 16) as i32 - 32768) as f64 / 32768.0;
+            (t * freq * tau).sin() * env * 0.7 + click * (-t * 40.0).exp() * 0.3
         }
         _ => 0.0,
     }

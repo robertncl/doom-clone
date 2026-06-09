@@ -1,7 +1,8 @@
 //! Level layouts and `load_level`.
 //!
 //! Map encoding: `#` stone, `=` brick, `B` metal, `D` wood, `H` hell-rock,
-//! `.` floor, `p` player spawn, `g` grunt, `i` imp, `h` health, `a` ammo.
+//! `.` floor, `p` player spawn, `g` grunt, `i` imp, `h` health, `a` ammo,
+//! `s` shotgun pickup, `r` rifle pickup.
 
 use crate::constants::*;
 use crate::game::Game;
@@ -14,7 +15,7 @@ pub static LEVELS: [[&str; MAP_H]; LEVEL_COUNT] = [
         "#..=...g...=.a.#",
         "#..=.......=...#",
         "#..====....=...#",
-        "#...h..........#",
+        "#...h..s...r...#",
         "#......=====...#",
         "#......=.g.....#",
         "#......=...==..#",
@@ -65,7 +66,7 @@ pub static LEVELS: [[&str; MAP_H]; LEVEL_COUNT] = [
         "HHHHHHHHHHHHHHHH",
         "Hp....g........H",
         "H..============H",
-        "H......i......aH",
+        "H..s...i......aH",
         "H..=..HHHHHH...H",
         "H..=....h..H.g.H",
         "H..====Hgg.H...H",
@@ -87,7 +88,7 @@ pub static LEVELS: [[&str; MAP_H]; LEVEL_COUNT] = [
         "H.#....g....#..H",
         "H.#.........#h.H",
         "H.####.##.####.H",
-        "H..............H",
+        "H......r.......H",
         "H.####.##.####.H",
         "H.#....i....#..H",
         "H.#.........#a.H",
@@ -159,6 +160,17 @@ impl Game {
                             self.pickups[p_idx].x = x as f64 + 0.5;
                             self.pickups[p_idx].y = y as f64 + 0.5;
                             self.pickups[p_idx].kind = PU_AMMO;
+                            self.pickups[p_idx].alive = true;
+                            p_idx += 1;
+                        }
+                        dest = b'.';
+                    }
+                    b's' | b'r' => {
+                        if p_idx < MAX_PICKUPS {
+                            self.pickups[p_idx].x = x as f64 + 0.5;
+                            self.pickups[p_idx].y = y as f64 + 0.5;
+                            self.pickups[p_idx].kind =
+                                if c == b'r' { PU_RIFLE } else { PU_SHOTGUN };
                             self.pickups[p_idx].alive = true;
                             p_idx += 1;
                         }
