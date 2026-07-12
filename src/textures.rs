@@ -12,12 +12,22 @@
 use crate::color::{hash2, make_color};
 use crate::constants::*;
 
+/// One square texture. A fixed-size array (not a `Vec`) so the sampler's
+/// mask-derived indices are provably in bounds and the bounds checks compile
+/// away in the hot wall/floor loops.
+pub type Tex = [u32; TEX_SIZE * TEX_SIZE];
+
 pub struct Textures {
     /// One texture per wall kind. Index 0 (`WALL_NONE`) is unused but kept so
     /// `wall[wall_type]` indexes directly.
-    pub wall: Vec<Vec<u32>>,
-    pub floor: Vec<u32>,
-    pub ceil: Vec<u32>,
+    pub wall: Vec<Box<Tex>>,
+    pub floor: Box<Tex>,
+    pub ceil: Box<Tex>,
+}
+
+/// Freeze a build-time buffer into a fixed-size texture.
+fn to_tex(v: Vec<u32>) -> Box<Tex> {
+    v.into_boxed_slice().try_into().expect("texture buffer size mismatch")
 }
 
 /// Smoothed value noise with period `cell` texels: bilinear-interpolate (with a
@@ -257,6 +267,10 @@ impl Textures {
             }
         }
 
-        Textures { wall, floor, ceil }
+        Textures {
+            wall: wall.into_iter().map(to_tex).collect(),
+            floor: to_tex(floor),
+            ceil: to_tex(ceil),
+        }
     }
 }

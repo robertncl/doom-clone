@@ -1,9 +1,10 @@
 //! Pixel/rect helpers, the DDA raycaster (textured walls + floor/ceiling cast),
 //! the pain-flash post-process, and full-frame composition.
 
-use crate::color::{make_color, sample_tex_bilinear_shaded};
+use crate::color::{sample_tex_bilinear_col, sample_tex_bilinear_shaded, shade_fp};
 use crate::constants::*;
 use crate::game::Game;
+use crate::textures::Tex;
 
 impl Game {
     #[inline]
@@ -131,13 +132,25 @@ impl Game {
             shade *= 0.72;
         }
 
-        let tex = &self.tex.wall[wall_type];
+        // The horizontal texel pair and X weight are constant down the column;
+        // resolve them once here instead of per pixel.
+        let sh = shade_fp(shade);
+        let fu = tex_uf - 0.5;
+        let u0 = fu.floor();
+        let wu = ((fu - u0) * 256.0) as u32;
+        let mask = (TEX_SIZE - 1) as i32;
+        let x0 = (u0 as i32 & mask) as usize;
+        let x1 = ((u0 as i32 + 1) & mask) as usize;
+
+        let Game { pixels, tex, .. } = self;
+        let tex: &Tex = &tex.wall[wall_type];
         let step = TEX_SIZE as f64 / line_h as f64;
         let mut tex_pos = (clip_start - SCREEN_H as i32 / 2 + line_h / 2) as f64 * step;
-        for y in clip_start..=clip_end {
-            self.pixels[y as usize * SCREEN_W + col] =
-                sample_tex_bilinear_shaded(tex, tex_uf, tex_pos, shade);
+        let mut idx = clip_start as usize * SCREEN_W + col;
+        for _ in clip_start..=clip_end {
+            pixels[idx] = sample_tex_bilinear_col(tex, x0, x1, wu, tex_pos, sh);
             tex_pos += step;
+            idx += SCREEN_W;
         }
     }
 
@@ -151,8 +164,8 @@ impl Game {
         // Disjoint borrows: read textures + player, write the framebuffer.
         let Game { pixels, tex, player, .. } = self;
         let (px, py) = (player.x, player.y);
-        let floor = &tex.floor;
-        let ceil = &tex.ceil;
+        let floor: &Tex = &tex.floor;
+        let ceil: &Tex = &tex.ceil;
 
         // Ray directions at the screen edges (camera_x = -1 .. +1).
         let ray_left_x = dir_x - plane_x;
@@ -164,19 +177,27 @@ impl Game {
 
         for y in (SCREEN_H / 2 + 1)..SCREEN_H {
             let row_dist = half_h / (y as f64 - half_h);
-            let mut fx = (px + row_dist * ray_left_x) * TEX_SIZE as f64;
-            let mut fy = (py + row_dist * ray_left_y) * TEX_SIZE as f64;
+            let fx0 = (px + row_dist * ray_left_x) * TEX_SIZE as f64;
+            let fy0 = (py + row_dist * ray_left_y) * TEX_SIZE as f64;
             let dfx = row_dist * span_x * inv_w * TEX_SIZE as f64;
             let dfy = row_dist * span_y * inv_w * TEX_SIZE as f64;
 
             let fb = (1.0 - row_dist / MAX_DEPTH).max(0.1);
-            let fb_ceil = fb * 0.85;
+            let sh_floor = shade_fp(fb);
+            let sh_ceil = shade_fp(fb * 0.85);
             let floor_row = y * SCREEN_W;
             let ceil_row = (SCREEN_H - 1 - y) * SCREEN_W; // mirror above the horizon
 
-            for col in 0..SCREEN_W {
-                pixels[floor_row + col] = sample_tex_bilinear_shaded(floor, fx, fy, fb);
-                pixels[ceil_row + col] = sample_tex_bilinear_shaded(ceil, fx, fy, fb_ceil);
+            // Zipped row slices: iterator writes skip the per-pixel bounds
+            // check, and keeping floor+ceiling in one loop gives two
+            // independent samples per iteration (better ILP than two passes).
+            let (above, below) = pixels.split_at_mut(floor_row);
+            let ceil_out = &mut above[ceil_row..ceil_row + SCREEN_W];
+            let floor_out = &mut below[..SCREEN_W];
+            let (mut fx, mut fy) = (fx0, fy0);
+            for (fo, co) in floor_out.iter_mut().zip(ceil_out.iter_mut()) {
+                *fo = sample_tex_bilinear_shaded(floor, fx, fy, sh_floor);
+                *co = sample_tex_bilinear_shaded(ceil, fx, fy, sh_ceil);
                 fx += dfx;
                 fy += dfy;
             }
@@ -185,19 +206,21 @@ impl Game {
 
     pub fn post_process(&mut self) {
         if self.pain_flash > 0.0 {
-            let mut a = self.pain_flash;
-            if a > 0.4 {
-                a = 0.4;
-            }
+            let a = self.pain_flash.min(0.4);
+            // 0..=256 fixed-point factors, hoisted so the full-screen loop is
+            // pure integer (it runs on every combat frame; the old per-pixel
+            // f64 version was a ~1 ms spike exactly when the player is hurt).
+            let af = (a * 256.0) as u32; // red lift, ≤ 102
+            let gf = ((1.0 - a * 0.4) * 256.0) as u32; // green/blue scale
             for px in self.pixels.iter_mut() {
                 let c = *px;
-                let r = ((c >> 16) & 0xFF) as f64;
-                let g = ((c >> 8) & 0xFF) as f64;
-                let b = (c & 0xFF) as f64;
-                let r = (r + (255.0 - r) * a) as i32;
-                let g = (g * (1.0 - a * 0.4)) as i32;
-                let b = (b * (1.0 - a * 0.4)) as i32;
-                *px = make_color(r, g, b);
+                let r = (c >> 16) & 0xFF;
+                let g = (c >> 8) & 0xFF;
+                let b = c & 0xFF;
+                let r = r + (((255 - r) * af) >> 8); // ≤ 255 by construction
+                let g = (g * gf) >> 8;
+                let b = (b * gf) >> 8;
+                *px = (r << 16) | (g << 8) | b;
             }
         }
     }

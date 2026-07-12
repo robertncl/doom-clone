@@ -478,12 +478,14 @@ impl Game {
             if tx >= self.depth[x as usize] {
                 continue;
             }
+            let xb = (x - dsx) as f64;
             for y in sy0..sy1 {
+                let yb = (y - dsy) as f64;
                 let (mut rs, mut gs, mut bs, mut cnt) = (0i32, 0i32, 0i32, 0i32);
                 for &oy in offs {
+                    let v = (yb + oy) * inv_h;
                     for &ox in offs {
-                        let u = ((x - dsx) as f64 + ox) * inv_w;
-                        let v = ((y - dsy) as f64 + oy) * inv_h;
+                        let u = (xb + ox) * inv_w;
                         if let Some(c) = sample(u, v) {
                             rs += ((c >> 16) & 0xFF) as i32;
                             gs += ((c >> 8) & 0xFF) as i32;
@@ -626,6 +628,10 @@ impl Game {
 
     fn draw_particles(&mut self) {
         let (px, py, ang) = (self.player.x, self.player.y, self.player.angle);
+        // Camera basis is the same for every particle — compute the trig once.
+        let cs = (-ang).cos();
+        let sn = (-ang).sin();
+        let plane_half = (FOV / 2.0).tan();
         for i in 0..MAX_PARTICLES {
             let p = self.parts[i];
             if p.life <= 0.0 {
@@ -633,14 +639,11 @@ impl Game {
             }
             let dx = p.x - px;
             let dy = p.y - py;
-            let cs = (-ang).cos();
-            let sn = (-ang).sin();
             let tx = dx * cs - dy * sn;
             let ty = dx * sn + dy * cs;
             if tx <= 0.1 {
                 continue;
             }
-            let plane_half = (FOV / 2.0).tan();
             let screen_x = (SCREEN_W as f64 / 2.0) * (1.0 + ty / (tx * plane_half));
             let mut sz = ((SCREEN_H as f64 / tx) * 0.08) as i32;
             if sz < 1 {
@@ -672,7 +675,10 @@ impl Game {
 
     pub fn render_sprites(&mut self) {
         // (distance², kind, index); kind 0=enemy 1=pickup 2=fireball.
-        let mut refs: Vec<(f64, u8, usize)> = Vec::new();
+        // Fixed-capacity scratch on the stack — no per-frame allocation.
+        const MAX_SPRITES: usize = MAX_ENEMIES + MAX_PICKUPS + MAX_FIREBALLS;
+        let mut refs = [(0.0f64, 0u8, 0usize); MAX_SPRITES];
+        let mut n = 0;
         let (px, py) = (self.player.x, self.player.y);
         for i in 0..MAX_ENEMIES {
             let e = self.enemies[i];
@@ -681,7 +687,8 @@ impl Game {
             }
             let dx = e.x - px;
             let dy = e.y - py;
-            refs.push((dx * dx + dy * dy, 0, i));
+            refs[n] = (dx * dx + dy * dy, 0, i);
+            n += 1;
         }
         for i in 0..MAX_PICKUPS {
             if !self.pickups[i].alive {
@@ -689,7 +696,8 @@ impl Game {
             }
             let dx = self.pickups[i].x - px;
             let dy = self.pickups[i].y - py;
-            refs.push((dx * dx + dy * dy, 1, i));
+            refs[n] = (dx * dx + dy * dy, 1, i);
+            n += 1;
         }
         for i in 0..MAX_FIREBALLS {
             if !self.fireballs[i].alive {
@@ -697,11 +705,14 @@ impl Game {
             }
             let dx = self.fireballs[i].x - px;
             let dy = self.fireballs[i].y - py;
-            refs.push((dx * dx + dy * dy, 2, i));
+            refs[n] = (dx * dx + dy * dy, 2, i);
+            n += 1;
         }
-        // Far-to-near so nearer sprites overwrite farther ones.
+        // Far-to-near so nearer sprites overwrite farther ones (stable, so
+        // equal distances keep the same draw order as before).
+        let refs = &mut refs[..n];
         refs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        for (_, kind, idx) in refs {
+        for &(_, kind, idx) in refs.iter() {
             match kind {
                 0 => self.draw_enemy(self.enemies[idx]),
                 1 => self.draw_pickup(self.pickups[idx]),
