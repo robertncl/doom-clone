@@ -133,6 +133,7 @@ impl Game {
             }
         }
         if goal_kind == 0 {
+            let mut best_i = usize::MAX;
             for i in 0..MAX_ENEMIES {
                 let e = self.enemies[i];
                 if !e.alive {
@@ -149,7 +150,30 @@ impl Game {
                     gx = e.x;
                     gy = e.y;
                     goal_kind = 1;
+                    best_i = i;
                 }
+            }
+            // Hysteresis: keep hunting the previous target while it's alive
+            // and viable unless the new candidate is under half its distance
+            // (0.25 in squared distance). Without this, two equidistant
+            // enemies behind opposite walls flip the BFS waypoint every
+            // frame and the bot dithers in place forever.
+            if goal_kind == 1 {
+                let t = self.bot.target;
+                if t >= 0 && (t as usize) < MAX_ENEMIES && t as usize != best_i {
+                    let e = self.enemies[t as usize];
+                    if e.alive && (reach(e.x, e.y) || self.bot_los(px, py, e.x, e.y)) {
+                        let dx = e.x - px;
+                        let dy = e.y - py;
+                        let dt2 = dx * dx + dy * dy;
+                        if best > 0.25 * dt2 {
+                            gx = e.x;
+                            gy = e.y;
+                            best_i = t as usize;
+                        }
+                    }
+                }
+                self.bot.target = best_i as i32;
             }
         }
         if goal_kind == 0 {

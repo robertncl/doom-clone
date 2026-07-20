@@ -19,7 +19,7 @@ pub const TURN_SPEED: f64 = 2.7; // max turn rate (radians / sec)
 pub const TURN_ACCEL: f64 = 16.0; // how fast turn-rate ramps up
 pub const TURN_FRICTION: f64 = 18.0; // how fast turn-rate decays when released
 
-pub const LEVEL_COUNT: usize = 5;
+pub const LEVEL_COUNT: usize = 7;
 pub const MAX_ENEMIES: usize = 16;
 pub const MAX_PARTICLES: usize = 192;
 pub const MAX_FIREBALLS: usize = 16;

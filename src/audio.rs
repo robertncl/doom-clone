@@ -224,13 +224,17 @@ impl Audio {
         let mut buf = [0i16; AUDIO_BUF_MAX];
         self.mix_samples(&mut buf[..samples]);
 
-        let mut bytes = Vec::with_capacity(samples * 2);
-        for &s in &buf[..samples] {
-            bytes.extend_from_slice(&s.to_le_bytes());
+        // Serialize s16le on the stack — this runs every frame, so avoid a
+        // per-tick heap allocation.
+        let mut bytes = [0u8; AUDIO_BUF_MAX * 2];
+        for (i, &s) in buf[..samples].iter().enumerate() {
+            let [lo, hi] = s.to_le_bytes();
+            bytes[i * 2] = lo;
+            bytes[i * 2 + 1] = hi;
         }
         let mut broken = false;
         if let Some(stdin) = &mut self.stdin {
-            if stdin.write_all(&bytes).is_err() {
+            if stdin.write_all(&bytes[..samples * 2]).is_err() {
                 broken = true; // pipe broken — quietly stop
             }
         }

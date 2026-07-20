@@ -61,7 +61,7 @@ pub struct Pickup {
 
 /// Persistent bot state — kept on the game so it survives across frames and
 /// across game restarts, rather than as locals inside the bot's think step.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct Bot {
     pub restart_t: f64,
     pub last_x: f64,
@@ -70,4 +70,23 @@ pub struct Bot {
     pub unstuck_t: f64,
     pub flip: bool,
     pub fire_t: f64,
+    /// Index of the enemy currently being hunted (-1 = none). Gives goal
+    /// selection hysteresis so two equidistant enemies behind opposite walls
+    /// don't flip the pathfinding waypoint every frame.
+    pub target: i32,
+}
+
+impl Default for Bot {
+    fn default() -> Self {
+        Bot {
+            restart_t: 0.0,
+            last_x: 0.0,
+            last_y: 0.0,
+            stuck_t: 0.0,
+            unstuck_t: 0.0,
+            flip: false,
+            fire_t: 0.0,
+            target: -1,
+        }
+    }
 }
