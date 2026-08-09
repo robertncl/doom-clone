@@ -24,11 +24,18 @@ and `--headless` modes exit cleanly.
 
 - DDA raycasting with distance shading and bilinear-filtered procedural textures
 - Smooth, velocity-based player movement with acceleration and friction
-- Imp-style enemy that chases and melees you
-- Pistol with muzzle flash + ammo counter
-- HUD (health, ammo), crosshair, death/win banners
+- Nine levels that escalate: plain corridors early, then lava, barrels and
+  heavier demons in the back half
+- Four enemy kinds — grunt (charges and melees), imp (keeps its distance and
+  throws fireballs), wraith (fast, translucent, spirals in), baron (armoured
+  bruiser with a three-way fireball fan)
+- Environment hazards: lava floor that burns you, and fuel barrels that chain
+  detonate — good for clearing a pack, bad if you pop one at your feet
+- Three weapons (pistol / shotgun / rifle) found as pickups, muzzle flash + ammo
+- HUD (health, ammo, weapon), kind-coloured minimap, crosshair, death/win banners
 - Movement-driven weapon bob for visual feedback
-- Built-in AI bot (`--bot`) that pathfinds, fights, and clears all five levels
+- Built-in AI bot (`--bot`) that pathfinds, fights, grabs guns, and routes
+  around lava
 - Self-test mode (`--selftest`) that validates level geometry and reachability
 
 ## Screenshots
@@ -40,6 +47,14 @@ Smooth bilinear-filtered textures (walls, floor, ceiling) and responsive player 
 | ![Brick corridor](screenshot1.png) | ![Interior view](screenshot2.png) |
 
 Textures are procedurally generated with detail (brick mortar, stone cracks, metal rivets, wood grain) and smoothly interpolated to eliminate the blocky nearest-neighbor look. Player movement eases in/out instead of snapping.
+
+The later levels add lava floors and fuel barrels, and a couple of heavier demons:
+
+| | |
+|---|---|
+| ![Foundry furnace](screenshot3.png) | ![Inferno core](screenshot4.png) |
+
+Left: the level 8 furnace — the rifle and medkit are behind a lava crossing, with a barrel parked between them. Right: the level 9 core, where a baron holds the one dry tile in a ring of fire.
 
 ## Building & running
 
@@ -72,15 +87,21 @@ Notes:
 | `--headless` | Run the simulation with no window (uses a fixed 60 Hz timestep). |
 | `--frames N` | Stop after `N` frames (handy with `--headless`/`--bot`). |
 | `--bot` | Let the built-in AI play. Works windowed (watch it) or headless. |
-| `--selftest` | Validate every level (geometry, spawns, reachability) and exit 0/1. |
+| `--selftest` | Validate every level (geometry, spawns, reachability, capacity) and exit 0/1. |
+| `--shot PATH` | Render one frame to a binary PPM and exit (renderer checks). |
+| `--shot-level N` | Which level `--shot` renders (0-based). |
+| `--shot-pos X,Y` | Put the `--shot` camera at a map position instead of the spawn. |
+| `--shot-angle DEG` | Face the `--shot` camera in a given direction. |
 
 ### Bot (AI player)
 
 `--bot` hands the controls to an AI that reads the world state and drives the
-same keys a human would. It BFS-pathfinds around walls, only fires when it has
-line of sight, manages range (closes on far targets, backs off meleeing
-grunts), dodges fireballs, grabs health/ammo when low, and auto-restarts for an
-endless attract-mode demo. Examples:
+same keys a human would. It BFS-pathfinds around walls, ranks goals by *path*
+distance (straight-line distance makes it yo-yo in a maze), only fires when it
+has line of sight, manages range (closes on far targets, backs off meleeing
+grunts), dodges fireballs, grabs health/ammo when low, detours for a gun it
+doesn't own yet, routes around lava unless the only way through is over it, and
+auto-restarts for an endless attract-mode demo. Examples:
 
 ```
 cargo run --release -- --bot                            # watch it play in a window

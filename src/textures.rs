@@ -23,6 +23,9 @@ pub struct Textures {
     pub wall: Vec<Box<Tex>>,
     pub floor: Box<Tex>,
     pub ceil: Box<Tex>,
+    /// Floor texture for lava tiles (`~`), swapped in per pixel by the floor
+    /// cast on levels that have any.
+    pub lava: Box<Tex>,
 }
 
 /// Freeze a build-time buffer into a fixed-size texture.
@@ -59,6 +62,7 @@ impl Textures {
         let mut wall = vec![vec![0u32; n]; WALL_KIND_MAX];
         let mut floor = vec![0u32; n];
         let mut ceil = vec![0u32; n];
+        let mut lava = vec![0u32; n];
         let s = TEX_SIZE as i32 / 64; // resolution scale: 1 at 64, 2 at 128
 
         for v in 0..TEX_SIZE as i32 {
@@ -185,14 +189,14 @@ impl Textures {
                 if hash2(u / (5 * s) + 3, v / (5 * s) + 9) > 195 {
                     vein = false;
                 }
-                let lava = hash2(u / (4 * s), v / (4 * s)) > 248;
+                let lava_spot = hash2(u / (4 * s), v / (4 * s)) > 248;
                 let (mut h_r, mut h_g, mut h_b);
                 if vein {
                     let glow = 200 + hn / 6;
                     h_r = glow;
                     h_g = 40 + hn2 / 8;
                     h_b = 20 + hn2 / 10;
-                } else if lava {
+                } else if lava_spot {
                     h_r = 230;
                     h_g = 140 + hn / 8;
                     h_b = 30;
@@ -207,6 +211,68 @@ impl Textures {
                     }
                 }
                 wall[WALL_HELL][idx] = make_color(h_r, h_g, h_b);
+
+                // ---- Tech panel: dark plating cut by glowing coolant channels,
+                //      with recessed vents and a bolt at each panel corner ----
+                let qu = u % (32 * s) / s; // design panel coord 0..31
+                let qv = v % (32 * s) / s;
+                let tn = hash2(u + 13, v + 7) - 128;
+                let tmottle = (fbm(u + 41, v + 23, 20 * s) / 9.0) as i32;
+                // Channel runs down one edge of every panel and across its middle.
+                let channel = qu == 15 || qu == 16 || (qv > 6 && qv < 9 && qu > 3 && qu < 28);
+                let vent = qv > 18 && qv < 28 && qu > 6 && qu < 25 && (qv % 3 == 0);
+                let seam = qu < 1 || qv < 1 || qu > 30 || qv > 30;
+                let bolt = (qu == 3 || qu == 28) && (qv == 3 || qv == 28);
+                let (t_r, t_g, t_b);
+                if bolt {
+                    t_r = 170 + tn / 8;
+                    t_g = 180 + tn / 8;
+                    t_b = 190 + tn / 8;
+                } else if channel {
+                    // Cyan glow, brightest along the channel's centre line.
+                    let core = if qu == 15 || qv == 7 { 60 } else { 0 };
+                    t_r = 30 + core / 2 + tn / 12;
+                    t_g = 170 + core + tn / 8;
+                    t_b = 190 + core + tn / 8;
+                } else if vent {
+                    t_r = 18;
+                    t_g = 22;
+                    t_b = 26;
+                } else if seam {
+                    t_r = 22 + tn / 12;
+                    t_g = 26 + tn / 12;
+                    t_b = 34 + tn / 12;
+                } else {
+                    t_r = 58 + tn / 6 + tmottle;
+                    t_g = 64 + tn / 6 + tmottle;
+                    t_b = 74 + tn / 6 + tmottle;
+                }
+                wall[WALL_TECH][idx] = make_color(t_r, t_g, t_b);
+
+                // ---- Lava: molten cells with dark crust rafts floating on them ----
+                let lmottle = fbm(u + 3, v + 61, 14 * s);
+                let lfine = fbm(u + 71, v + 5, 5 * s);
+                let heat = lmottle + lfine * 0.5; // ≈ -240..240
+                let (l_r, l_g, l_b);
+                if heat < -70.0 {
+                    // Cooled crust: near-black rock with a dull red underglow.
+                    let t = ((-heat - 70.0) / 90.0).min(1.0);
+                    l_r = (110.0 - 60.0 * t) as i32;
+                    l_g = (34.0 - 22.0 * t) as i32;
+                    l_b = (20.0 - 14.0 * t) as i32;
+                } else if heat > 90.0 {
+                    // Hottest veins run white-yellow.
+                    let t = ((heat - 90.0) / 110.0).min(1.0);
+                    l_r = 255;
+                    l_g = (200.0 + 55.0 * t) as i32;
+                    l_b = (60.0 + 120.0 * t) as i32;
+                } else {
+                    let t = (heat + 70.0) / 160.0; // 0..1 across the molten band
+                    l_r = (215.0 + 40.0 * t) as i32;
+                    l_g = (60.0 + 130.0 * t) as i32;
+                    l_b = (18.0 + 30.0 * t) as i32;
+                }
+                lava[idx] = make_color(l_r, l_g, l_b);
 
                 // ---- Floor tile: bevels, scuffs, cracked tile patches ----
                 let tu = u % (16 * s) / s; // design tile coord 0..15
@@ -271,6 +337,7 @@ impl Textures {
             wall: wall.into_iter().map(to_tex).collect(),
             floor: to_tex(floor),
             ceil: to_tex(ceil),
+            lava: to_tex(lava),
         }
     }
 }

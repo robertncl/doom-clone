@@ -39,6 +39,19 @@ pub struct Fireball {
     pub vy: f64,
     pub alive: bool,
     pub life: f64,
+    /// Health taken on a hit. Baron volleys hit harder than imp spit.
+    pub dmg: i32,
+}
+
+/// A fuel barrel: one hit pops it, and the blast hurts everything nearby —
+/// including the player — and detonates neighbouring barrels.
+#[derive(Clone, Copy, Default)]
+pub struct Barrel {
+    pub x: f64,
+    pub y: f64,
+    pub alive: bool,
+    /// Counts down after a hit so the sprite flashes before it goes.
+    pub hit_flash: f64,
 }
 
 #[derive(Clone, Copy, Default)]

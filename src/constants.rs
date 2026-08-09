@@ -19,11 +19,12 @@ pub const TURN_SPEED: f64 = 2.7; // max turn rate (radians / sec)
 pub const TURN_ACCEL: f64 = 16.0; // how fast turn-rate ramps up
 pub const TURN_FRICTION: f64 = 18.0; // how fast turn-rate decays when released
 
-pub const LEVEL_COUNT: usize = 7;
-pub const MAX_ENEMIES: usize = 16;
-pub const MAX_PARTICLES: usize = 192;
-pub const MAX_FIREBALLS: usize = 16;
-pub const MAX_PICKUPS: usize = 16;
+pub const LEVEL_COUNT: usize = 9;
+pub const MAX_ENEMIES: usize = 20;
+pub const MAX_PARTICLES: usize = 256;
+pub const MAX_FIREBALLS: usize = 24;
+pub const MAX_PICKUPS: usize = 18;
+pub const MAX_BARRELS: usize = 12;
 pub const MAX_HIGHSCORES: usize = 5;
 pub const HIGHSCORE_FILE: &str = "doom_scores.dat";
 
@@ -49,11 +50,31 @@ pub const WALL_BRICK: usize = 2;
 pub const WALL_METAL: usize = 3;
 pub const WALL_WOOD: usize = 4;
 pub const WALL_HELL: usize = 5;
-pub const WALL_KIND_MAX: usize = 6;
+pub const WALL_TECH: usize = 6;
+pub const WALL_KIND_MAX: usize = 7;
 
 // Enemy and pickup kinds.
 pub const EN_GRUNT: i32 = 0;
 pub const EN_IMP: i32 = 1;
+pub const EN_WRAITH: i32 = 2;
+pub const EN_BARON: i32 = 3;
+pub const EN_KIND_MAX: usize = 4;
+
+/// Per-kind enemy tuning, indexed by `EN_*`: spawn hit points, kill score, and
+/// billboard scale relative to a grunt (the baron is a head taller, the wraith
+/// is a slighter silhouette).
+pub const EN_HP: [i32; EN_KIND_MAX] = [2, 3, 2, 8];
+pub const EN_SCORE: [i32; EN_KIND_MAX] = [100, 200, 250, 500];
+pub const EN_SCALE: [f64; EN_KIND_MAX] = [1.0, 1.0, 0.92, 1.35];
+
+// Exploding barrels: any hit pops them, and the blast chains to neighbours.
+pub const BARREL_RADIUS: f64 = 2.4; // blast reach, world units
+pub const BARREL_DAMAGE: i32 = 32; // damage at the centre, falling off to 0
+pub const BARREL_SELF_DAMAGE: i32 = 22; // max the player takes from their own blast
+
+/// Damage per second taken while standing on a lava tile (`~`).
+pub const HAZARD_DPS: f64 = 16.0;
+
 pub const PU_HEALTH: i32 = 0;
 pub const PU_AMMO: i32 = 1;
 pub const PU_SHOTGUN: i32 = 2;
@@ -77,4 +98,5 @@ pub const SND_PLAYER_HURT: usize = 6;
 pub const SND_LEVEL_CLEAR: usize = 7;
 pub const SND_GAME_OVER: usize = 8;
 pub const SND_PICKUP_WEAPON: usize = 9;
-pub const SND_KIND_MAX: usize = 10;
+pub const SND_EXPLOSION: usize = 10;
+pub const SND_KIND_MAX: usize = 11;
