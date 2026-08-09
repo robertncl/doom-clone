@@ -20,6 +20,8 @@ mod level;
 mod render;
 mod selftest;
 mod sprites;
+#[cfg(test)]
+mod tests;
 mod textures;
 mod types;
 
@@ -44,111 +46,153 @@ const KEYMAP: &[(usize, &[Key])] = &[
     (K_WEAPON3, &[Key::Key3]),
 ];
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let mut headless = false;
-    let mut selftest = false;
-    let mut bot = false;
-    let mut max_frames: i64 = -1;
-    let mut shot: Option<String> = None;
-    let mut shot_level = 0usize;
-    let mut shot_pos: Option<(f64, f64)> = None;
-    let mut shot_angle: Option<f64> = None;
+/// Everything the command line can set. Parsed out of `main` so the flag
+/// handling can be tested without spawning a process.
+#[derive(Debug, PartialEq)]
+struct Args {
+    headless: bool,
+    selftest: bool,
+    bot: bool,
+    /// Stop after this many frames; negative means run until quit.
+    max_frames: i64,
+    shot: Option<String>,
+    shot_level: usize,
+    shot_pos: Option<(f64, f64)>,
+    shot_angle: Option<f64>,
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Args {
+            headless: false,
+            selftest: false,
+            bot: false,
+            max_frames: -1,
+            shot: None,
+            shot_level: 0,
+            shot_pos: None,
+            shot_angle: None,
+        }
+    }
+}
+
+/// Parse `argv` (including argv[0]). Unknown flags are ignored, and a flag
+/// whose value is missing or unparseable keeps the default rather than failing
+/// the run — this is a game, not a build tool.
+fn parse_args(argv: &[String]) -> Args {
+    let mut a = Args::default();
     let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--headless" => headless = true,
-            "--selftest" => selftest = true,
-            "--bot" => bot = true,
+    while i < argv.len() {
+        // Value-taking flags consume the next argument when there is one.
+        let value = |i: &mut usize| -> Option<&str> {
+            if *i + 1 < argv.len() {
+                *i += 1;
+                Some(argv[*i].as_str())
+            } else {
+                None
+            }
+        };
+        match argv[i].as_str() {
+            "--headless" => a.headless = true,
+            "--selftest" => a.selftest = true,
+            "--bot" => a.bot = true,
             "--frames" => {
-                if i + 1 < args.len() {
-                    max_frames = args[i + 1].parse().unwrap_or(-1);
-                    i += 1;
+                if let Some(v) = value(&mut i) {
+                    a.max_frames = v.parse().unwrap_or(-1);
                 }
             }
             "--shot" => {
-                if i + 1 < args.len() {
-                    shot = Some(args[i + 1].clone());
-                    i += 1;
+                if let Some(v) = value(&mut i) {
+                    a.shot = Some(v.to_string());
                 }
             }
             "--shot-level" => {
-                if i + 1 < args.len() {
-                    shot_level = args[i + 1].parse().unwrap_or(0);
-                    i += 1;
+                if let Some(v) = value(&mut i) {
+                    a.shot_level = v.parse().unwrap_or(0);
                 }
             }
             "--shot-pos" => {
-                if i + 1 < args.len() {
-                    let mut it = args[i + 1].split(',').map(|s| s.trim().parse::<f64>());
+                if let Some(v) = value(&mut i) {
+                    let mut it = v.split(',').map(|s| s.trim().parse::<f64>());
                     if let (Some(Ok(x)), Some(Ok(y))) = (it.next(), it.next()) {
-                        shot_pos = Some((x, y));
+                        a.shot_pos = Some((x, y));
                     }
-                    i += 1;
                 }
             }
             "--shot-angle" => {
-                if i + 1 < args.len() {
-                    shot_angle = args[i + 1].parse::<f64>().ok().map(|d| d.to_radians());
-                    i += 1;
+                if let Some(v) = value(&mut i) {
+                    a.shot_angle = v.parse::<f64>().ok().map(|d| d.to_radians());
                 }
             }
             _ => {}
         }
         i += 1;
     }
+    a
+}
 
-    if selftest {
-        std::process::exit(selftest::run_self_test());
+/// Build the one-frame game state a `--shot` run renders.
+fn shot_game(args: &Args) -> Game {
+    let mut g = Game::new();
+    g.load_high_scores();
+    g.reset_game();
+    if args.shot_level > 0 {
+        g.load_level(args.shot_level.min(LEVEL_COUNT - 1));
+    }
+    // Camera overrides let a shot frame anything in the level, not just
+    // whatever the spawn point happens to face.
+    if let Some((x, y)) = args.shot_pos {
+        g.player.x = x;
+        g.player.y = y;
+    }
+    if let Some(a) = args.shot_angle {
+        g.player.angle = a;
+    }
+    g.show_intro = false;
+    g
+}
+
+/// Do whatever the arguments ask for and return the process exit code. Split
+/// from `main` so every mode except the windowed loop (which needs a real
+/// display) can be driven from a test.
+fn run(args: &Args) -> i32 {
+    if args.selftest {
+        return selftest::run_self_test();
     }
 
     // Render a single frame of one level to a PPM and exit (renderer check).
-    if let Some(path) = shot {
-        let mut g = Game::new();
-        g.load_high_scores();
-        g.reset_game();
-        if shot_level > 0 {
-            g.load_level(shot_level.min(LEVEL_COUNT - 1));
-        }
-        // Camera overrides let a shot frame anything in the level, not just
-        // whatever the spawn point happens to face.
-        if let Some((x, y)) = shot_pos {
-            g.player.x = x;
-            g.player.y = y;
-        }
-        if let Some(a) = shot_angle {
-            g.player.angle = a;
-        }
-        g.show_intro = false;
+    if let Some(path) = &args.shot {
+        let mut g = shot_game(args);
         g.render_frame();
-        write_ppm(&path, &g.pixels);
-        return;
+        write_ppm(path, &g.pixels);
+        return 0;
     }
 
     let mut g = Game::new();
     g.load_high_scores();
     // Audio only makes sense for the interactive window; headless/bot test runs
     // skip it (no point spawning a PCM player, and it keeps them deterministic).
-    if !headless {
+    if !args.headless {
         g.audio.init();
     }
     g.reset_game();
 
-    let frames = if headless {
-        run_headless(&mut g, bot, max_frames)
+    let frames = if args.headless {
+        run_headless(&mut g, args.bot, args.max_frames)
     } else {
-        run_windowed(&mut g, bot, max_frames)
+        run_windowed(&mut g, args.bot, args.max_frames)
     };
 
-    if bot {
-        println!(
-            "[bot] done: {} frames, level {}, final score {}",
-            frames,
-            g.level + 1,
-            g.score
-        );
+    if args.bot {
+        println!("[bot] done: {} frames, level {}, final score {}", frames, g.level + 1, g.score);
     }
     g.audio.shutdown();
+    0
+}
+
+fn main() {
+    let argv: Vec<String> = std::env::args().collect();
+    std::process::exit(run(&parse_args(&argv)));
 }
 
 /// Dump the 0RGB framebuffer as a binary PPM (P6) for offline inspection.
@@ -218,6 +262,21 @@ fn run_headless(g: &mut Game, bot: bool, max_frames: i64) -> u64 {
     frames
 }
 
+/// Fold this frame's held-key state into the game: `keys` is the held state,
+/// and `key_edge` gets a rising edge OR'd in (update_game clears the ones it
+/// consumes, matching the C event model). `prev_down` carries last frame's
+/// state across the call. Separate from the window loop so the edge detection
+/// can be tested without a display.
+fn apply_input(g: &mut Game, down: &[bool; K_COUNT], prev_down: &mut [bool; K_COUNT]) {
+    for action in 0..K_COUNT {
+        if down[action] && !prev_down[action] {
+            g.key_edge[action] = true;
+        }
+        g.keys[action] = down[action];
+        prev_down[action] = down[action];
+    }
+}
+
 /// Windowed loop via minifb (handles the 2x upscale + present).
 fn run_windowed(g: &mut Game, bot: bool, max_frames: i64) -> u64 {
     let mut window = Window::new(
@@ -240,16 +299,11 @@ fn run_windowed(g: &mut Game, bot: bool, max_frames: i64) -> u64 {
     let mut prev_down = [false; K_COUNT];
 
     while g.running && window.is_open() {
-        // Read held keys and derive rising edges (OR-in edges; update_game
-        // clears the ones it consumes, matching the C event model).
+        let mut down = [false; K_COUNT];
         for &(action, phys) in KEYMAP {
-            let down = phys.iter().any(|&k| window.is_key_down(k));
-            if down && !prev_down[action] {
-                g.key_edge[action] = true;
-            }
-            g.keys[action] = down;
-            prev_down[action] = down;
+            down[action] = phys.iter().any(|&k| window.is_key_down(k));
         }
+        apply_input(g, &down, &mut prev_down);
 
         let now = Instant::now();
         let dt = (now - prev).as_secs_f64().min(0.05);

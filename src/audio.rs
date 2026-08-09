@@ -7,11 +7,20 @@ use crate::constants::*;
 use std::io::Write;
 use std::process::{Child, ChildStdin, Command, Stdio};
 
-const AUDIO_RATE: f64 = 22050.0;
-const MAX_SOUNDS: usize = 16;
-const AUDIO_BUF_MAX: usize = 4096;
+pub(crate) const AUDIO_RATE: f64 = 22050.0;
+pub(crate) const MAX_SOUNDS: usize = 16;
+pub(crate) const AUDIO_BUF_MAX: usize = 4096;
 
-const SOUND_DUR: [f64; SND_KIND_MAX] =
+/// External players to try, in order; each reads raw s16le mono on stdin.
+/// The first one that launches wins.
+const PLAYERS: &[(&str, &[&str])] = &[
+    ("paplay", &["--raw", "--format=s16le", "--rate=22050", "--channels=1", "--latency-msec=80"]),
+    ("aplay", &["-q", "-t", "raw", "-f", "S16_LE", "-r", "22050", "-c", "1", "--buffer-time=80000"]),
+    ("play", &["-q", "-t", "raw", "-r", "22050", "-c", "1", "-e", "signed", "-b", "16", "-"]),
+    ("sox", &["-q", "-t", "raw", "-r", "22050", "-c", "1", "-e", "signed", "-b", "16", "-", "-d"]),
+];
+
+pub(crate) const SOUND_DUR: [f64; SND_KIND_MAX] =
     [0.20, 0.15, 0.50, 0.30, 0.25, 0.35, 0.35, 0.90, 1.60, 0.40, 0.70];
 
 #[derive(Clone, Copy, Default)]
@@ -24,7 +33,7 @@ struct ActiveSound {
 
 pub struct Audio {
     sounds: [ActiveSound; MAX_SOUNDS],
-    ok: bool,
+    pub(crate) ok: bool,
     rng: u32,
     _child: Option<Child>, // kept alive so its stdin pipe stays open
     stdin: Option<ChildStdin>,
@@ -35,7 +44,7 @@ fn audio_noise(s: &mut u32) -> u32 {
     *s
 }
 
-fn sound_sample(kind: usize, t: f64, seed: &mut u32) -> f64 {
+pub(crate) fn sound_sample(kind: usize, t: f64, seed: &mut u32) -> f64 {
     let tau = 2.0 * std::f64::consts::PI;
     match kind {
         SND_SHOOT => {
@@ -149,22 +158,12 @@ impl Audio {
     }
 
     pub fn init(&mut self) {
-        // First external player that launches wins; each reads raw s16le mono.
-        let candidates: &[(&str, &[&str])] = &[
-            (
-                "paplay",
-                &["--raw", "--format=s16le", "--rate=22050", "--channels=1", "--latency-msec=80"],
-            ),
-            (
-                "aplay",
-                &["-q", "-t", "raw", "-f", "S16_LE", "-r", "22050", "-c", "1", "--buffer-time=80000"],
-            ),
-            ("play", &["-q", "-t", "raw", "-r", "22050", "-c", "1", "-e", "signed", "-b", "16", "-"]),
-            (
-                "sox",
-                &["-q", "-t", "raw", "-r", "22050", "-c", "1", "-e", "signed", "-b", "16", "-", "-d"],
-            ),
-        ];
+        self.init_with(PLAYERS);
+    }
+
+    /// Open the first of `candidates` that launches. Split out from [`init`] so
+    /// a test can point it at a program that is guaranteed to exist.
+    pub(crate) fn init_with(&mut self, candidates: &[(&str, &[&str])]) {
         for (bin, args) in candidates {
             if let Ok(mut child) = Command::new(bin)
                 .args(*args)
@@ -187,7 +186,7 @@ impl Audio {
         self.ok = false;
     }
 
-    fn mix_samples(&mut self, buf: &mut [i16]) {
+    pub(crate) fn mix_samples(&mut self, buf: &mut [i16]) {
         let count = buf.len();
         for (i, slot) in buf.iter_mut().enumerate() {
             let sample_time = i as f64 / AUDIO_RATE;

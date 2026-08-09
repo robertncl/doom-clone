@@ -247,7 +247,9 @@ impl Game {
         let eye_y = if hp < 30 { y + 11 } else { y + 9 };
         self.fill_rect(x + 7, eye_y, 4, 3, 0xFFFFFF);
         self.fill_rect(x + 17, eye_y, 4, 3, 0xFFFFFF);
-        let pupil_off = ((self.global_time * 1.7).sin() * 1.0) as i32;
+        // Rounded, not truncated: a raw `as i32` of a ±1 sine is 0 for all but
+        // the two exact extremes, so the eyes never actually moved.
+        let pupil_off = (self.global_time * 1.7).sin().round() as i32;
         self.fill_rect(x + 8 + pupil_off, eye_y, 2, 3, 0x000000);
         self.fill_rect(x + 18 + pupil_off, eye_y, 2, 3, 0x000000);
         // nose

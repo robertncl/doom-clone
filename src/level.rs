@@ -192,13 +192,20 @@ pub static LEVELS: [[&str; MAP_H]; LEVEL_COUNT] = [
 
 impl Game {
     pub fn load_level(&mut self, n: usize) {
+        self.load_level_map(&LEVELS[n], n);
+    }
+
+    /// Load `map` and record it as level `n`. Split from [`Game::load_level`]
+    /// so the level validator can run the loader over a candidate table rather
+    /// than only the one that ships.
+    pub fn load_level_map(&mut self, map: &[&str; MAP_H], n: usize) {
         self.reset_transients();
         let mut e_idx = 0usize;
         let mut p_idx = 0usize;
         let mut b_idx = 0usize;
         self.has_hazard = false;
         for y in 0..MAP_H {
-            let row = LEVELS[n][y].as_bytes();
+            let row = map[y].as_bytes();
             for x in 0..MAP_W {
                 let c = row[x];
                 let mut dest = c;
