@@ -10,7 +10,7 @@ use std::f64::consts::PI;
 /// Distance from (px,py) to (tx,ty) if that point sits inside the shot's
 /// angular tolerance around `ang`, else `None`. The tolerance shrinks with
 /// distance, so far targets need a tighter bead.
-fn shot_hit_dist(px: f64, py: f64, ang: f64, tx: f64, ty: f64) -> Option<f64> {
+pub(crate) fn shot_hit_dist(px: f64, py: f64, ang: f64, tx: f64, ty: f64) -> Option<f64> {
     let dx = tx - px;
     let dy = ty - py;
     let d = (dx * dx + dy * dy).sqrt();
@@ -30,7 +30,7 @@ fn shot_hit_dist(px: f64, py: f64, ang: f64, tx: f64, ty: f64) -> Option<f64> {
 }
 
 impl Game {
-    fn spawn_particle(&mut self, x: f64, y: f64, vx: f64, vy: f64, life: f64, color: u32) {
+    pub(crate) fn spawn_particle(&mut self, x: f64, y: f64, vx: f64, vy: f64, life: f64, color: u32) {
         for p in self.parts.iter_mut() {
             if p.life <= 0.0 {
                 p.x = x;
@@ -44,7 +44,7 @@ impl Game {
         }
     }
 
-    fn spawn_blood(&mut self, x: f64, y: f64, count: i32) {
+    pub(crate) fn spawn_blood(&mut self, x: f64, y: f64, count: i32) {
         for _ in 0..count {
             let a = self.rand_f64() * 2.0 * PI;
             let s = 0.3 + self.rand_f64() * 0.7;
@@ -53,14 +53,14 @@ impl Game {
         }
     }
 
-    fn spawn_sparks(&mut self, x: f64, y: f64) {
+    pub(crate) fn spawn_sparks(&mut self, x: f64, y: f64) {
         for _ in 0..6 {
             let a = self.rand_f64() * 2.0 * PI;
             self.spawn_particle(x, y, a.cos() * 0.4, a.sin() * 0.4, 0.35, 0xFFE060);
         }
     }
 
-    fn update_particles(&mut self, dt: f64) {
+    pub(crate) fn update_particles(&mut self, dt: f64) {
         for p in self.parts.iter_mut() {
             if p.life <= 0.0 {
                 continue;
@@ -75,7 +75,7 @@ impl Game {
 
     /// Launch a projectile from (x,y) toward (tx,ty). `spread` rotates the shot
     /// off that line (radians), so a caller can fan out a volley from one aim.
-    fn spawn_fireball(&mut self, x: f64, y: f64, tx: f64, ty: f64, spread: f64, speed: f64, dmg: i32) {
+    pub(crate) fn spawn_fireball(&mut self, x: f64, y: f64, tx: f64, ty: f64, spread: f64, speed: f64, dmg: i32) {
         for i in 0..MAX_FIREBALLS {
             if self.fireballs[i].alive {
                 continue;
@@ -99,7 +99,7 @@ impl Game {
         }
     }
 
-    fn update_fireballs(&mut self, dt: f64) {
+    pub(crate) fn update_fireballs(&mut self, dt: f64) {
         for i in 0..MAX_FIREBALLS {
             let mut fb = self.fireballs[i];
             if !fb.alive {
@@ -159,7 +159,7 @@ impl Game {
 
     /// Move an enemy by (dx,dy), sliding along walls one axis at a time so a
     /// corner deflects it instead of stopping it dead.
-    fn move_enemy(&self, e: &mut Enemy, dx: f64, dy: f64) {
+    pub(crate) fn move_enemy(&self, e: &mut Enemy, dx: f64, dy: f64) {
         if !self.map_blocked((e.x + dx) as i32, e.y as i32) {
             e.x += dx;
         }
@@ -169,7 +169,7 @@ impl Game {
     }
 
     /// Land a melee hit on the player (no-op if they're already down).
-    fn melee_player(&mut self, dmg: i32) {
+    pub(crate) fn melee_player(&mut self, dmg: i32) {
         if self.player.health <= 0 {
             return;
         }
@@ -178,7 +178,7 @@ impl Game {
         self.audio.play(SND_PLAYER_HURT);
     }
 
-    fn update_enemies(&mut self, dt: f64) {
+    pub(crate) fn update_enemies(&mut self, dt: f64) {
         for i in 0..MAX_ENEMIES {
             let mut e = self.enemies[i];
             if e.hit_flash > 0.0 {
@@ -278,7 +278,7 @@ impl Game {
 
     /// Apply `dmg` to an enemy, with the blood, sound and score-on-kill that go
     /// with it. Shared by the hitscan shot and by barrel blasts.
-    fn damage_enemy(&mut self, i: usize, dmg: i32) {
+    pub(crate) fn damage_enemy(&mut self, i: usize, dmg: i32) {
         if !self.enemies[i].alive {
             return;
         }
@@ -298,7 +298,7 @@ impl Game {
     }
 
     /// Index of a live barrel within `r` of (x,y), if any.
-    fn barrel_at(&self, x: f64, y: f64, r: f64) -> Option<usize> {
+    pub(crate) fn barrel_at(&self, x: f64, y: f64, r: f64) -> Option<usize> {
         (0..MAX_BARRELS).find(|&i| {
             let b = self.barrels[i];
             b.alive && (b.x - x) * (b.x - x) + (b.y - y) * (b.y - y) < r * r
@@ -310,7 +310,7 @@ impl Game {
     /// point-blank barrel-popping is a real risk), and barrels caught in the
     /// radius go up too. Chaining runs off a worklist rather than recursion, so
     /// a whole line of barrels detonates in one pass.
-    fn explode_barrel(&mut self, idx: usize) {
+    pub(crate) fn explode_barrel(&mut self, idx: usize) {
         let mut queue = [0usize; MAX_BARRELS];
         let mut tail = 0usize;
         queue[tail] = idx;
@@ -380,7 +380,7 @@ impl Game {
     /// Burn the player while they stand in lava. Damage accrues fractionally so
     /// the rate is frame-rate independent, and the hurt sound is throttled so a
     /// long crossing doesn't machine-gun it.
-    fn update_hazard(&mut self, dt: f64) {
+    pub(crate) fn update_hazard(&mut self, dt: f64) {
         if !self.map_hazard(self.player.x as i32, self.player.y as i32) {
             self.hazard_burn = 0.0;
             return;
@@ -401,7 +401,7 @@ impl Game {
         }
     }
 
-    fn update_pickups(&mut self) {
+    pub(crate) fn update_pickups(&mut self) {
         for i in 0..MAX_PICKUPS {
             if !self.pickups[i].alive {
                 continue;
@@ -441,7 +441,7 @@ impl Game {
         }
     }
 
-    fn shoot(&mut self) {
+    pub(crate) fn shoot(&mut self) {
         if self.player.ammo <= 0 {
             return;
         }
@@ -471,7 +471,7 @@ impl Game {
 
     /// Trace one hitscan pellet at `angle_off` from the aim direction, stopping
     /// at the nearest wall and damaging the nearest enemy along it by `dmg`.
-    fn fire_ray(&mut self, angle_off: f64, dmg: i32) {
+    pub(crate) fn fire_ray(&mut self, angle_off: f64, dmg: i32) {
         let ang = self.player.angle + angle_off;
         let rx = ang.cos();
         let ry = ang.sin();
@@ -693,116 +693,5 @@ impl Game {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A game on an empty walled room, player at (2.5, 2.5) facing +X with ammo.
-    fn open_room() -> Game {
-        let mut g = Game::new();
-        g.reset_game();
-        g.reset_transients();
-        g.show_intro = false;
-        for y in 0..MAP_H {
-            for x in 0..MAP_W {
-                let edge = x == 0 || y == 0 || x == MAP_W - 1 || y == MAP_H - 1;
-                g.cur_map[y][x] = if edge { b'#' } else { b'.' };
-            }
-        }
-        g.has_hazard = false;
-        g.player.x = 2.5;
-        g.player.y = 2.5;
-        g.player.angle = 0.0;
-        g.player.health = 100;
-        g.player.ammo = 50;
-        g.player.weapon = WP_PISTOL;
-        g
-    }
-
-    fn put_enemy(g: &mut Game, i: usize, x: f64, y: f64, kind: i32) {
-        g.enemies[i].x = x;
-        g.enemies[i].y = y;
-        g.enemies[i].kind = kind;
-        g.enemies[i].hp = EN_HP[kind as usize];
-        g.enemies[i].alive = true;
-    }
-
-    #[test]
-    fn shooting_a_barrel_blasts_nearby_enemies() {
-        let mut g = open_room();
-        g.barrels[0] = crate::types::Barrel { x: 5.5, y: 2.5, alive: true, hit_flash: 0.0 };
-        // In the blast, and far enough behind the barrel that the pellet itself
-        // would have stopped at the barrel first.
-        put_enemy(&mut g, 0, 6.4, 2.5, EN_GRUNT);
-        // Well outside BARREL_RADIUS.
-        put_enemy(&mut g, 1, 11.5, 2.5, EN_GRUNT);
-
-        g.shoot();
-
-        assert!(!g.barrels[0].alive, "the barrel should have gone up");
-        assert!(!g.enemies[0].alive, "the blast should have killed the near grunt");
-        assert!(g.enemies[1].alive, "the far grunt is out of range");
-        assert_eq!(g.enemies[1].hp, EN_HP[EN_GRUNT as usize]);
-    }
-
-    #[test]
-    fn barrel_blasts_chain_through_neighbours() {
-        let mut g = open_room();
-        g.barrels[0] = crate::types::Barrel { x: 5.5, y: 2.5, alive: true, hit_flash: 0.0 };
-        g.barrels[1] = crate::types::Barrel { x: 7.0, y: 2.5, alive: true, hit_flash: 0.0 };
-        // Only in range of the *second* barrel, so it can only die by the chain.
-        put_enemy(&mut g, 0, 8.4, 2.5, EN_GRUNT);
-
-        g.shoot();
-
-        assert!(!g.barrels[0].alive && !g.barrels[1].alive, "both barrels should blow");
-        assert!(!g.enemies[0].alive, "the chained blast should reach the far grunt");
-    }
-
-    #[test]
-    fn the_player_takes_damage_from_their_own_barrel() {
-        let mut g = open_room();
-        g.barrels[0] = crate::types::Barrel { x: 3.4, y: 2.5, alive: true, hit_flash: 0.0 };
-        g.shoot();
-        assert!(g.player.health < 100, "popping a barrel point-blank should hurt");
-    }
-
-    #[test]
-    fn lava_burns_the_player_at_the_tuned_rate() {
-        let mut g = open_room();
-        g.cur_map[2][2] = b'~'; // the tile the player is standing on
-        g.has_hazard = true;
-
-        for _ in 0..60 {
-            g.update_hazard(1.0 / 60.0);
-        }
-        let burned = 100 - g.player.health;
-        assert!(
-            (burned - HAZARD_DPS as i32).abs() <= 1,
-            "one second in lava should cost about {} health, took {}",
-            HAZARD_DPS,
-            burned
-        );
-
-        // Stepping off stops the burn.
-        g.player.x = 4.5;
-        let health = g.player.health;
-        for _ in 0..60 {
-            g.update_hazard(1.0 / 60.0);
-        }
-        assert_eq!(g.player.health, health, "dry ground should not burn");
-    }
-
-    #[test]
-    fn barons_answer_range_with_a_three_way_volley() {
-        let mut g = open_room();
-        put_enemy(&mut g, 0, 8.5, 2.5, EN_BARON);
-        g.update_enemies(1.0 / 60.0);
-        let live = g.fireballs.iter().filter(|f| f.alive).count();
-        assert_eq!(live, 3, "a baron should open with a fan of three fireballs");
-        assert!(g.fireballs[0].dmg > 12, "baron fire should hit harder than imp fire");
     }
 }

@@ -48,6 +48,10 @@ pub struct Game {
     pub tex: Textures,
     pub audio: Audio,
     pub bot: Bot,
+    /// Where the high-score table is kept. A field rather than a hard-wired
+    /// constant so a test can point it at a scratch file instead of stomping
+    /// the one in the working directory.
+    pub score_file: String,
     rng: u32,
 }
 
@@ -84,10 +88,11 @@ impl Game {
             tex: Textures::build(),
             audio: Audio::new(),
             bot: Bot::default(),
+            score_file: HIGHSCORE_FILE.to_string(),
             // The RNG only drives cosmetic randomness (blood directions, imp
-            // fire cadence), but those feed back into the bot's marginal level-4
-            // fight; this default lets the demo bot clear all five levels.
-            // Override with DOOM_SEED for reproducible alternate runs.
+            // fire cadence), but those feed back into the bot's marginal
+            // fights; this default is the one the demo bot clears all nine
+            // levels on. Override with DOOM_SEED for reproducible alternates.
             rng: std::env::var("DOOM_SEED")
                 .ok()
                 .and_then(|s| s.parse::<u32>().ok())
@@ -193,7 +198,7 @@ impl Game {
 
     pub fn load_high_scores(&mut self) {
         self.high_scores = [0; MAX_HIGHSCORES];
-        if let Ok(f) = std::fs::File::open(HIGHSCORE_FILE) {
+        if let Ok(f) = std::fs::File::open(&self.score_file) {
             let reader = std::io::BufReader::new(f);
             for (i, line) in reader.lines().enumerate() {
                 if i >= MAX_HIGHSCORES {
@@ -211,7 +216,7 @@ impl Game {
     }
 
     pub fn save_high_scores(&self) {
-        if let Ok(mut f) = std::fs::File::create(HIGHSCORE_FILE) {
+        if let Ok(mut f) = std::fs::File::create(&self.score_file) {
             for s in &self.high_scores {
                 let _ = writeln!(f, "{}", s);
             }

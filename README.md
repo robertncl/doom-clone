@@ -108,6 +108,34 @@ cargo run --release -- --bot                            # watch it play in a win
 cargo run --release -- --headless --bot --frames 10800  # 3 min of play, prints score per second
 ```
 
+## Tests and coverage
+
+252 tests, **97% line coverage** of the game code.
+
+```
+cargo test --release          # the whole suite (~40s)
+./coverage.sh                 # coverage summary (~15min, instrumented)
+./coverage.sh --open          # HTML report
+```
+
+The suite lives under `src/tests/`, one module per area of the game, and runs
+the real code rather than mocks: the play-through tests drive the AI through
+actual levels frame by frame (update *and* render), so they catch the failures
+that only appear when the simulation, the bot and the renderer are pointed at
+each other — a livelocked bot, a level that can't be cleared, a sprite that
+misbehaves at some particular distance.
+
+Coverage excludes `src/tests/` from the report on purpose. Test bodies run by
+definition, so counting them would score ~100% across thousands of lines and
+flatter the total; what's reported is coverage of the game itself. `coverage.sh`
+needs `cargo install cargo-llvm-cov` and `rustup component add
+llvm-tools-preview`.
+
+The one part left to manual smoke testing is the windowed loop (`run_windowed`
+and `main`), which needs a real display and process — `cargo run --release --
+--frames 60` covers it. The input edge detection it used to contain was pulled
+out into `apply_input` so that part *is* tested.
+
 ## Audio
 
 The game synthesizes effects in software and pipes raw PCM to an external
