@@ -15,17 +15,22 @@ fn check(ok: &mut bool, cond: bool, what: &str) {
 
 pub fn run_self_test() -> i32 {
     let mut ok = true;
-    let valid = "#=BDH.pgihasr";
+    let valid = "#=BDHT.~pgiwkhasro";
     let mut g = Game::new();
 
     for n in 0..LEVEL_COUNT {
         let mut player_count = 0;
+        let (mut enemy_count, mut pickup_count, mut barrel_count) = (0, 0, 0);
         for y in 0..MAP_H {
             let row = LEVELS[n][y];
             check(&mut ok, row.len() == MAP_W, &format!("level {} row {} length", n, y));
             for (x, ch) in row.chars().enumerate() {
-                if ch == 'p' {
-                    player_count += 1;
+                match ch {
+                    'p' => player_count += 1,
+                    'g' | 'i' | 'w' | 'k' => enemy_count += 1,
+                    'h' | 'a' | 's' | 'r' => pickup_count += 1,
+                    'o' => barrel_count += 1,
+                    _ => {}
                 }
                 check(
                     &mut ok,
@@ -35,6 +40,24 @@ pub fn run_self_test() -> i32 {
             }
         }
         check(&mut ok, player_count == 1, &format!("level {} has exactly one player spawn", n));
+
+        // Over-capacity spawns are silently dropped by the loader, which would
+        // quietly delete part of a level's design — catch it here instead.
+        check(
+            &mut ok,
+            enemy_count <= MAX_ENEMIES,
+            &format!("level {} enemy count {} fits MAX_ENEMIES", n, enemy_count),
+        );
+        check(
+            &mut ok,
+            pickup_count <= MAX_PICKUPS,
+            &format!("level {} pickup count {} fits MAX_PICKUPS", n, pickup_count),
+        );
+        check(
+            &mut ok,
+            barrel_count <= MAX_BARRELS,
+            &format!("level {} barrel count {} fits MAX_BARRELS", n, barrel_count),
+        );
 
         g.reset_game();
         g.load_level(n);
@@ -53,7 +76,17 @@ pub fn run_self_test() -> i32 {
             !g.map_blocked(g.player.x as i32, g.player.y as i32),
             &format!("level {} player does not spawn inside a wall", n),
         );
+        check(
+            &mut ok,
+            !g.map_hazard(g.player.x as i32, g.player.y as i32),
+            &format!("level {} player does not spawn in lava", n),
+        );
         check(&mut ok, g.level_enemy_count > 0, &format!("level {} has at least one enemy", n));
+        check(
+            &mut ok,
+            g.level_enemy_count == enemy_count as i32,
+            &format!("level {} spawned every enemy in the map", n),
+        );
 
         // Flood-fill walkable cells from spawn, then assert every enemy and
         // pickup is reachable. A sealed-off enemy can never be killed, so the
@@ -108,6 +141,16 @@ pub fn run_self_test() -> i32 {
                     &mut ok,
                     seen[g.pickups[i].y as usize][g.pickups[i].x as usize],
                     &format!("level {} pickup {} is reachable from spawn", n, i),
+                );
+            }
+            for i in 0..MAX_BARRELS {
+                if !g.barrels[i].alive {
+                    continue;
+                }
+                check(
+                    &mut ok,
+                    seen[g.barrels[i].y as usize][g.barrels[i].x as usize],
+                    &format!("level {} barrel {} is reachable from spawn", n, i),
                 );
             }
         }

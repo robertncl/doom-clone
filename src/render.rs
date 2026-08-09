@@ -154,6 +154,50 @@ impl Game {
         }
     }
 
+    /// One row of the floor/ceiling cast. `HAZ` is a const parameter rather than
+    /// a runtime flag so lava-free levels compile down to exactly the loop that
+    /// shipped before lava existed — the map lookup only exists in the
+    /// monomorphisation the hazard levels call.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn cast_floor_row<const HAZ: bool>(
+        floor_out: &mut [u32],
+        ceil_out: &mut [u32],
+        tex: (&Tex, &Tex, &Tex), // (floor, ceiling, lava)
+        map: &[[u8; MAP_W]; MAP_H],
+        (mut fx, mut fy): (f64, f64),
+        (dfx, dfy): (f64, f64),
+        (sh_floor, sh_ceil, sh_lava): (u32, u32, u32),
+    ) {
+        let (floor, ceil, lava) = tex;
+        for (fo, co) in floor_out.iter_mut().zip(ceil_out.iter_mut()) {
+            if HAZ {
+                // Texel units -> map cell. The +BIAS/-BIAS pair floors toward
+                // negative infinity (a plain cast truncates toward zero, which
+                // would fold the cells just outside the map onto cell 0);
+                // out-of-range cells then fail the unsigned bound test.
+                const BIAS: f64 = 1024.0;
+                let inv = 1.0 / TEX_SIZE as f64;
+                let cx = (fx * inv + BIAS) as i32 - BIAS as i32;
+                let cy = (fy * inv + BIAS) as i32 - BIAS as i32;
+                if (cx as u32) < MAP_W as u32
+                    && (cy as u32) < MAP_H as u32
+                    && map[cy as usize][cx as usize] == b'~'
+                {
+                    *fo = sample_tex_bilinear_shaded(lava, fx, fy, sh_lava);
+                    *co = sample_tex_bilinear_shaded(ceil, fx, fy, sh_ceil);
+                    fx += dfx;
+                    fy += dfy;
+                    continue;
+                }
+            }
+            *fo = sample_tex_bilinear_shaded(floor, fx, fy, sh_floor);
+            *co = sample_tex_bilinear_shaded(ceil, fx, fy, sh_ceil);
+            fx += dfx;
+            fy += dfy;
+        }
+    }
+
     /// Fill the floor (lower half) and ceiling (upper half) with a per-row cast.
     /// For a given screen row the camera distance is constant, so the texture
     /// coordinate steps linearly across the row — one divide per row instead of
@@ -161,11 +205,17 @@ impl Game {
     /// old per-column cast that strided by a full row each step). Walls are drawn
     /// on top afterwards, so over-drawing the wall band here is harmless.
     pub fn render_floor_ceiling(&mut self, dir_x: f64, dir_y: f64, plane_x: f64, plane_y: f64) {
-        // Disjoint borrows: read textures + player, write the framebuffer.
-        let Game { pixels, tex, player, .. } = self;
+        // Lava is emissive, so it keeps most of its brightness with distance and
+        // pulses gently instead of sitting flat. One factor for the whole frame.
+        let flicker = 0.9 + 0.1 * (self.global_time * 3.7).sin();
+
+        // Disjoint borrows: read textures + map + player, write the framebuffer.
+        let Game { pixels, tex, player, cur_map, has_hazard, .. } = self;
         let (px, py) = (player.x, player.y);
+        let has_hazard = *has_hazard;
         let floor: &Tex = &tex.floor;
         let ceil: &Tex = &tex.ceil;
+        let lava: &Tex = &tex.lava;
 
         // Ray directions at the screen edges (camera_x = -1 .. +1).
         let ray_left_x = dir_x - plane_x;
@@ -185,6 +235,7 @@ impl Game {
             let fb = (1.0 - row_dist / MAX_DEPTH).max(0.1);
             let sh_floor = shade_fp(fb);
             let sh_ceil = shade_fp(fb * 0.85);
+            let sh_lava = shade_fp((0.55 + fb * 0.45) * flicker);
             let floor_row = y * SCREEN_W;
             let ceil_row = (SCREEN_H - 1 - y) * SCREEN_W; // mirror above the horizon
 
@@ -194,12 +245,16 @@ impl Game {
             let (above, below) = pixels.split_at_mut(floor_row);
             let ceil_out = &mut above[ceil_row..ceil_row + SCREEN_W];
             let floor_out = &mut below[..SCREEN_W];
-            let (mut fx, mut fy) = (fx0, fy0);
-            for (fo, co) in floor_out.iter_mut().zip(ceil_out.iter_mut()) {
-                *fo = sample_tex_bilinear_shaded(floor, fx, fy, sh_floor);
-                *co = sample_tex_bilinear_shaded(ceil, fx, fy, sh_ceil);
-                fx += dfx;
-                fy += dfy;
+            let texes = (floor, ceil, lava);
+            let shades = (sh_floor, sh_ceil, sh_lava);
+            if has_hazard {
+                Self::cast_floor_row::<true>(
+                    floor_out, ceil_out, texes, cur_map, (fx0, fy0), (dfx, dfy), shades,
+                );
+            } else {
+                Self::cast_floor_row::<false>(
+                    floor_out, ceil_out, texes, cur_map, (fx0, fy0), (dfx, dfy), shades,
+                );
             }
         }
     }

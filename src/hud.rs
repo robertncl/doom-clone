@@ -556,20 +556,38 @@ impl Game {
                     b'B' => 0x4060A0,
                     b'D' => 0x805020,
                     b'H' => 0x602010,
+                    b'T' => 0x2F6A70,
+                    b'~' => 0xE05018, // lava reads hot even at minimap size
                     _ => 0x404040,
                 };
                 self.fill_rect(mx0 + x as i32 * cell, my0 + y as i32 * cell, cell - 1, cell - 1, c);
             }
         }
-        // enemies
+        // barrels (drawn under the enemies so a blip is never hidden)
+        for i in 0..MAX_BARRELS {
+            if !self.barrels[i].alive {
+                continue;
+            }
+            let px = mx0 + (self.barrels[i].x * cell as f64) as i32;
+            let py = my0 + (self.barrels[i].y * cell as f64) as i32;
+            self.fill_rect(px - 1, py - 1, 2, 2, 0x907020);
+        }
+        // enemies, coloured by kind
         for i in 0..MAX_ENEMIES {
             if !self.enemies[i].alive {
                 continue;
             }
-            let c = if self.enemies[i].kind == EN_IMP { 0xE04020 } else { 0xC0C040 };
+            let c = match self.enemies[i].kind {
+                EN_IMP => 0xE04020,
+                EN_WRAITH => 0x60D0FF,
+                EN_BARON => 0xFF80E0,
+                _ => 0xC0C040,
+            };
+            // Barons get a fatter blip — they're the ones worth routing around.
+            let sz = if self.enemies[i].kind == EN_BARON { 4 } else { 3 };
             let px = mx0 + (self.enemies[i].x * cell as f64) as i32;
             let py = my0 + (self.enemies[i].y * cell as f64) as i32;
-            self.fill_rect(px - 1, py - 1, 3, 3, c);
+            self.fill_rect(px - 1, py - 1, sz, sz, c);
         }
         // pickups
         for i in 0..MAX_PICKUPS {

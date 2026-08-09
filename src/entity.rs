@@ -4,7 +4,30 @@
 
 use crate::constants::*;
 use crate::game::Game;
+use crate::types::Enemy;
 use std::f64::consts::PI;
+
+/// Distance from (px,py) to (tx,ty) if that point sits inside the shot's
+/// angular tolerance around `ang`, else `None`. The tolerance shrinks with
+/// distance, so far targets need a tighter bead.
+fn shot_hit_dist(px: f64, py: f64, ang: f64, tx: f64, ty: f64) -> Option<f64> {
+    let dx = tx - px;
+    let dy = ty - py;
+    let d = (dx * dx + dy * dy).sqrt();
+    let mut a = dy.atan2(dx) - ang;
+    while a > PI {
+        a -= 2.0 * PI;
+    }
+    while a < -PI {
+        a += 2.0 * PI;
+    }
+    let tol = (0.22 / d.max(1.0)).max(0.04);
+    if a.abs() > tol {
+        None
+    } else {
+        Some(d)
+    }
+}
 
 impl Game {
     fn spawn_particle(&mut self, x: f64, y: f64, vx: f64, vy: f64, life: f64, color: u32) {
@@ -50,7 +73,9 @@ impl Game {
         }
     }
 
-    fn spawn_fireball(&mut self, x: f64, y: f64, tx: f64, ty: f64) {
+    /// Launch a projectile from (x,y) toward (tx,ty). `spread` rotates the shot
+    /// off that line (radians), so a caller can fan out a volley from one aim.
+    fn spawn_fireball(&mut self, x: f64, y: f64, tx: f64, ty: f64, spread: f64, speed: f64, dmg: i32) {
         for i in 0..MAX_FIREBALLS {
             if self.fireballs[i].alive {
                 continue;
@@ -61,12 +86,14 @@ impl Game {
             if d < 0.0001 {
                 return;
             }
+            let a = dy.atan2(dx) + spread;
             self.fireballs[i].x = x;
             self.fireballs[i].y = y;
-            self.fireballs[i].vx = dx / d * 3.0;
-            self.fireballs[i].vy = dy / d * 3.0;
+            self.fireballs[i].vx = a.cos() * speed;
+            self.fireballs[i].vy = a.sin() * speed;
             self.fireballs[i].alive = true;
             self.fireballs[i].life = 3.0;
+            self.fireballs[i].dmg = dmg;
             self.audio.play(SND_FIREBALL);
             return;
         }
@@ -95,11 +122,19 @@ impl Game {
             }
             fb.x = nx;
             fb.y = ny;
+            // A fireball that lands on a barrel sets it off — enemy fire can
+            // just as easily blow up the scenery in the player's favour.
+            if let Some(b) = self.barrel_at(fb.x, fb.y, 0.45) {
+                fb.alive = false;
+                self.fireballs[i] = fb;
+                self.explode_barrel(b);
+                continue;
+            }
             // hit player
             let dx = self.player.x - fb.x;
             let dy = self.player.y - fb.y;
             if dx * dx + dy * dy < 0.18 {
-                self.player.health -= 12;
+                self.player.health -= fb.dmg;
                 if self.player.health < 0 {
                     self.player.health = 0;
                 }
@@ -120,6 +155,27 @@ impl Game {
                 self.fireballs[i] = fb;
             }
         }
+    }
+
+    /// Move an enemy by (dx,dy), sliding along walls one axis at a time so a
+    /// corner deflects it instead of stopping it dead.
+    fn move_enemy(&self, e: &mut Enemy, dx: f64, dy: f64) {
+        if !self.map_blocked((e.x + dx) as i32, e.y as i32) {
+            e.x += dx;
+        }
+        if !self.map_blocked(e.x as i32, (e.y + dy) as i32) {
+            e.y += dy;
+        }
+    }
+
+    /// Land a melee hit on the player (no-op if they're already down).
+    fn melee_player(&mut self, dmg: i32) {
+        if self.player.health <= 0 {
+            return;
+        }
+        self.player.health = (self.player.health - dmg).max(0);
+        self.pain_flash = 0.3;
+        self.audio.play(SND_PLAYER_HURT);
     }
 
     fn update_enemies(&mut self, dt: f64) {
@@ -147,58 +203,201 @@ impl Game {
             let nx = dx / dist;
             let ny = dy / dist;
 
-            if e.kind == EN_GRUNT {
-                let speed = 1.1 * dt;
-                if dist > 0.7 {
-                    let mx = e.x + nx * speed;
-                    let my = e.y + ny * speed;
-                    if !self.map_blocked(mx as i32, e.y as i32) {
-                        e.x = mx;
-                    }
-                    if !self.map_blocked(e.x as i32, my as i32) {
-                        e.y = my;
-                    }
-                } else if e.atk_cool <= 0.0 && self.player.health > 0 {
-                    self.player.health -= 7;
-                    if self.player.health < 0 {
-                        self.player.health = 0;
-                    }
-                    e.atk_cool = 1.0;
-                    self.pain_flash = 0.3;
-                    self.audio.play(SND_PLAYER_HURT);
-                }
-            } else {
-                // IMP: keep medium distance, throw fireballs
-                let speed = 0.9 * dt;
-                if dist > 4.5 {
-                    let mx = e.x + nx * speed;
-                    let my = e.y + ny * speed;
-                    if !self.map_blocked(mx as i32, e.y as i32) {
-                        e.x = mx;
-                    }
-                    if !self.map_blocked(e.x as i32, my as i32) {
-                        e.y = my;
-                    }
-                } else if dist < 2.5 {
-                    let mx = e.x - nx * speed * 0.5;
-                    let my = e.y - ny * speed * 0.5;
-                    if !self.map_blocked(mx as i32, e.y as i32) {
-                        e.x = mx;
-                    }
-                    if !self.map_blocked(e.x as i32, my as i32) {
-                        e.y = my;
+            match e.kind {
+                EN_GRUNT => {
+                    // Walks straight at you and swings.
+                    let speed = 1.1 * dt;
+                    if dist > 0.7 {
+                        self.move_enemy(&mut e, nx * speed, ny * speed);
+                    } else if e.atk_cool <= 0.0 {
+                        e.atk_cool = 1.0;
+                        self.melee_player(7);
                     }
                 }
-                if e.atk_cool <= 0.0 && dist < 8.0 && self.player.health > 0 {
-                    let (ex, ey) = (e.x, e.y);
-                    let (tx, ty) = (self.player.x, self.player.y);
-                    e.atk_cool = 2.0 + self.rand_f64();
-                    self.enemies[i] = e;
-                    self.spawn_fireball(ex, ey, tx, ty);
-                    continue;
+                EN_IMP => {
+                    // Keeps medium distance and throws fireballs.
+                    let speed = 0.9 * dt;
+                    if dist > 4.5 {
+                        self.move_enemy(&mut e, nx * speed, ny * speed);
+                    } else if dist < 2.5 {
+                        self.move_enemy(&mut e, -nx * speed * 0.5, -ny * speed * 0.5);
+                    }
+                    if e.atk_cool <= 0.0 && dist < 8.0 && self.player.health > 0 {
+                        let (ex, ey) = (e.x, e.y);
+                        let (tx, ty) = (self.player.x, self.player.y);
+                        e.atk_cool = 2.0 + self.rand_f64();
+                        self.enemies[i] = e;
+                        self.spawn_fireball(ex, ey, tx, ty, 0.0, 3.0, 12);
+                        continue;
+                    }
+                }
+                EN_WRAITH => {
+                    // Fast and evasive: it spirals in rather than charging on a
+                    // straight line, so it's awkward to keep in the crosshair.
+                    // Alternating orbit direction by index keeps a pack from
+                    // stacking into a single silhouette.
+                    let speed = 2.0 * dt;
+                    if dist > 0.75 {
+                        let side = if i & 1 == 0 { 1.0 } else { -1.0 };
+                        let swirl = (self.global_time * 2.2 + e.anim).sin() * 0.8 * side;
+                        let mx = nx - ny * swirl;
+                        let my = ny + nx * swirl;
+                        let l = (mx * mx + my * my).sqrt().max(1e-6);
+                        self.move_enemy(&mut e, mx / l * speed, my / l * speed);
+                    } else if e.atk_cool <= 0.0 {
+                        e.atk_cool = 0.9;
+                        self.melee_player(8);
+                    }
+                }
+                _ => {
+                    // BARON: a bruiser. Closes to brawling range, hits hard up
+                    // close, and lobs a three-way fireball fan from further out
+                    // so backing off isn't a free answer.
+                    let speed = 1.3 * dt;
+                    if dist > 1.4 {
+                        self.move_enemy(&mut e, nx * speed, ny * speed);
+                    } else if e.atk_cool <= 0.0 {
+                        e.atk_cool = 1.3;
+                        self.melee_player(18);
+                    }
+                    if e.atk_cool <= 0.0 && dist >= 1.4 && dist < 10.0 && self.player.health > 0 {
+                        let (ex, ey) = (e.x, e.y);
+                        let (tx, ty) = (self.player.x, self.player.y);
+                        e.atk_cool = 2.4 + self.rand_f64();
+                        self.enemies[i] = e;
+                        for k in -1..=1 {
+                            self.spawn_fireball(ex, ey, tx, ty, k as f64 * 0.22, 3.6, 13);
+                        }
+                        continue;
+                    }
                 }
             }
             self.enemies[i] = e;
+        }
+    }
+
+    /// Apply `dmg` to an enemy, with the blood, sound and score-on-kill that go
+    /// with it. Shared by the hitscan shot and by barrel blasts.
+    fn damage_enemy(&mut self, i: usize, dmg: i32) {
+        if !self.enemies[i].alive {
+            return;
+        }
+        self.enemies[i].hp -= dmg;
+        self.enemies[i].hit_flash = 0.15;
+        let (ex, ey, kind, hp) =
+            (self.enemies[i].x, self.enemies[i].y, self.enemies[i].kind, self.enemies[i].hp);
+        self.spawn_blood(ex, ey, 8);
+        if hp <= 0 {
+            self.enemies[i].alive = false;
+            self.spawn_blood(ex, ey, 14);
+            self.score += EN_SCORE[kind as usize];
+            self.audio.play(SND_DEATH);
+        } else {
+            self.audio.play(SND_HIT);
+        }
+    }
+
+    /// Index of a live barrel within `r` of (x,y), if any.
+    fn barrel_at(&self, x: f64, y: f64, r: f64) -> Option<usize> {
+        (0..MAX_BARRELS).find(|&i| {
+            let b = self.barrels[i];
+            b.alive && (b.x - x) * (b.x - x) + (b.y - y) * (b.y - y) < r * r
+        })
+    }
+
+    /// Blow up barrel `idx` and everything its blast reaches: enemies take
+    /// damage falling off with distance, the player takes a smaller share (so
+    /// point-blank barrel-popping is a real risk), and barrels caught in the
+    /// radius go up too. Chaining runs off a worklist rather than recursion, so
+    /// a whole line of barrels detonates in one pass.
+    fn explode_barrel(&mut self, idx: usize) {
+        let mut queue = [0usize; MAX_BARRELS];
+        let mut tail = 0usize;
+        queue[tail] = idx;
+        tail += 1;
+        self.barrels[idx].alive = false;
+
+        let mut head = 0usize;
+        while head < tail {
+            let (bx, by) = (self.barrels[queue[head]].x, self.barrels[queue[head]].y);
+            head += 1;
+            self.audio.play(SND_EXPLOSION);
+
+            // Fireball puff: a bright core of embers plus a slower smoke ring.
+            for k in 0..20 {
+                let a = self.rand_f64() * 2.0 * PI;
+                let s = 0.8 + self.rand_f64() * 2.2;
+                let life = 0.35 + self.rand_f64() * 0.5;
+                let c = if k % 3 == 0 { 0xFFF0A0 } else { 0xFF7020 };
+                self.spawn_particle(bx, by, a.cos() * s, a.sin() * s, life, c);
+            }
+            for _ in 0..6 {
+                let a = self.rand_f64() * 2.0 * PI;
+                self.spawn_particle(bx, by, a.cos() * 0.5, a.sin() * 0.5, 0.9, 0x404040);
+            }
+
+            // Falloff factor for a target `d` away: 1 at the centre, 0 at the edge.
+            let falloff = |d: f64| (1.0 - d / BARREL_RADIUS).max(0.0);
+
+            for i in 0..MAX_ENEMIES {
+                let e = self.enemies[i];
+                if !e.alive {
+                    continue;
+                }
+                let d = ((e.x - bx) * (e.x - bx) + (e.y - by) * (e.y - by)).sqrt();
+                if d >= BARREL_RADIUS {
+                    continue;
+                }
+                let dmg = ((BARREL_DAMAGE as f64 * falloff(d)) as i32).max(1);
+                self.damage_enemy(i, dmg);
+            }
+
+            let pd = ((self.player.x - bx) * (self.player.x - bx)
+                + (self.player.y - by) * (self.player.y - by))
+                .sqrt();
+            if pd < BARREL_RADIUS && self.player.health > 0 {
+                let dmg = ((BARREL_SELF_DAMAGE as f64 * falloff(pd)) as i32).max(1);
+                self.player.health = (self.player.health - dmg).max(0);
+                self.pain_flash = 0.45;
+                self.audio.play(SND_PLAYER_HURT);
+            }
+
+            for j in 0..MAX_BARRELS {
+                let b = self.barrels[j];
+                if !b.alive {
+                    continue;
+                }
+                if (b.x - bx) * (b.x - bx) + (b.y - by) * (b.y - by) < BARREL_RADIUS * BARREL_RADIUS
+                {
+                    self.barrels[j].alive = false;
+                    queue[tail] = j;
+                    tail += 1;
+                }
+            }
+        }
+    }
+
+    /// Burn the player while they stand in lava. Damage accrues fractionally so
+    /// the rate is frame-rate independent, and the hurt sound is throttled so a
+    /// long crossing doesn't machine-gun it.
+    fn update_hazard(&mut self, dt: f64) {
+        if !self.map_hazard(self.player.x as i32, self.player.y as i32) {
+            self.hazard_burn = 0.0;
+            return;
+        }
+        self.hazard_burn += HAZARD_DPS * dt;
+        let whole = self.hazard_burn as i32;
+        if whole <= 0 {
+            return;
+        }
+        self.hazard_burn -= whole as f64;
+        self.player.health = (self.player.health - whole).max(0);
+        if self.pain_flash < 0.2 {
+            self.pain_flash = 0.2;
+        }
+        if self.hazard_snd_t <= 0.0 {
+            self.hazard_snd_t = 0.7;
+            self.audio.play(SND_PLAYER_HURT);
         }
     }
 
@@ -291,51 +490,40 @@ impl Game {
             }
         }
 
-        let mut best_idx: i32 = -1;
+        // Nearest thing the pellet lines up with, out to the wall it stopped at.
+        // Barrels compete with enemies for the hit, so a barrel in front of a
+        // pack eats the shot — and pays it back with the blast.
+        let (px, py) = (self.player.x, self.player.y);
         let mut best_dist = wall_t;
+        let mut best: Option<(bool, usize)> = None; // (is_barrel, index)
         for i in 0..MAX_ENEMIES {
             let e = self.enemies[i];
             if !e.alive {
                 continue;
             }
-            let dx = e.x - self.player.x;
-            let dy = e.y - self.player.y;
-            let d = (dx * dx + dy * dy).sqrt();
-            let mut a = dy.atan2(dx) - ang;
-            while a > PI {
-                a -= 2.0 * PI;
-            }
-            while a < -PI {
-                a += 2.0 * PI;
-            }
-            // angular tolerance shrinks with distance
-            let mut tol = 0.22 / (if d < 1.0 { 1.0 } else { d });
-            if tol < 0.04 {
-                tol = 0.04;
-            }
-            if a.abs() > tol {
-                continue;
-            }
-            if d < best_dist {
-                best_dist = d;
-                best_idx = i as i32;
+            if let Some(d) = shot_hit_dist(px, py, ang, e.x, e.y) {
+                if d < best_dist {
+                    best_dist = d;
+                    best = Some((false, i));
+                }
             }
         }
-        if best_idx >= 0 {
-            let i = best_idx as usize;
-            self.enemies[i].hp -= dmg;
-            self.enemies[i].hit_flash = 0.15;
-            let (ex, ey, kind, hp) =
-                (self.enemies[i].x, self.enemies[i].y, self.enemies[i].kind, self.enemies[i].hp);
-            self.spawn_blood(ex, ey, 8);
-            if hp <= 0 {
-                self.enemies[i].alive = false;
-                self.spawn_blood(ex, ey, 14);
-                self.score += if kind == EN_IMP { 200 } else { 100 };
-                self.audio.play(SND_DEATH);
-            } else {
-                self.audio.play(SND_HIT);
+        for i in 0..MAX_BARRELS {
+            let b = self.barrels[i];
+            if !b.alive {
+                continue;
             }
+            if let Some(d) = shot_hit_dist(px, py, ang, b.x, b.y) {
+                if d < best_dist {
+                    best_dist = d;
+                    best = Some((true, i));
+                }
+            }
+        }
+        match best {
+            Some((true, i)) => self.explode_barrel(i),
+            Some((false, i)) => self.damage_enemy(i, dmg),
+            None => {}
         }
     }
 
@@ -343,6 +531,9 @@ impl Game {
         self.global_time += dt;
         if self.pain_flash > 0.0 {
             self.pain_flash -= dt;
+        }
+        if self.hazard_snd_t > 0.0 {
+            self.hazard_snd_t -= dt;
         }
 
         if self.show_intro {
@@ -474,6 +665,7 @@ impl Game {
         }
 
         if self.player.health > 0 {
+            self.update_hazard(dt);
             self.update_enemies(dt);
             self.update_fireballs(dt);
             self.update_pickups();
@@ -501,5 +693,116 @@ impl Game {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A game on an empty walled room, player at (2.5, 2.5) facing +X with ammo.
+    fn open_room() -> Game {
+        let mut g = Game::new();
+        g.reset_game();
+        g.reset_transients();
+        g.show_intro = false;
+        for y in 0..MAP_H {
+            for x in 0..MAP_W {
+                let edge = x == 0 || y == 0 || x == MAP_W - 1 || y == MAP_H - 1;
+                g.cur_map[y][x] = if edge { b'#' } else { b'.' };
+            }
+        }
+        g.has_hazard = false;
+        g.player.x = 2.5;
+        g.player.y = 2.5;
+        g.player.angle = 0.0;
+        g.player.health = 100;
+        g.player.ammo = 50;
+        g.player.weapon = WP_PISTOL;
+        g
+    }
+
+    fn put_enemy(g: &mut Game, i: usize, x: f64, y: f64, kind: i32) {
+        g.enemies[i].x = x;
+        g.enemies[i].y = y;
+        g.enemies[i].kind = kind;
+        g.enemies[i].hp = EN_HP[kind as usize];
+        g.enemies[i].alive = true;
+    }
+
+    #[test]
+    fn shooting_a_barrel_blasts_nearby_enemies() {
+        let mut g = open_room();
+        g.barrels[0] = crate::types::Barrel { x: 5.5, y: 2.5, alive: true, hit_flash: 0.0 };
+        // In the blast, and far enough behind the barrel that the pellet itself
+        // would have stopped at the barrel first.
+        put_enemy(&mut g, 0, 6.4, 2.5, EN_GRUNT);
+        // Well outside BARREL_RADIUS.
+        put_enemy(&mut g, 1, 11.5, 2.5, EN_GRUNT);
+
+        g.shoot();
+
+        assert!(!g.barrels[0].alive, "the barrel should have gone up");
+        assert!(!g.enemies[0].alive, "the blast should have killed the near grunt");
+        assert!(g.enemies[1].alive, "the far grunt is out of range");
+        assert_eq!(g.enemies[1].hp, EN_HP[EN_GRUNT as usize]);
+    }
+
+    #[test]
+    fn barrel_blasts_chain_through_neighbours() {
+        let mut g = open_room();
+        g.barrels[0] = crate::types::Barrel { x: 5.5, y: 2.5, alive: true, hit_flash: 0.0 };
+        g.barrels[1] = crate::types::Barrel { x: 7.0, y: 2.5, alive: true, hit_flash: 0.0 };
+        // Only in range of the *second* barrel, so it can only die by the chain.
+        put_enemy(&mut g, 0, 8.4, 2.5, EN_GRUNT);
+
+        g.shoot();
+
+        assert!(!g.barrels[0].alive && !g.barrels[1].alive, "both barrels should blow");
+        assert!(!g.enemies[0].alive, "the chained blast should reach the far grunt");
+    }
+
+    #[test]
+    fn the_player_takes_damage_from_their_own_barrel() {
+        let mut g = open_room();
+        g.barrels[0] = crate::types::Barrel { x: 3.4, y: 2.5, alive: true, hit_flash: 0.0 };
+        g.shoot();
+        assert!(g.player.health < 100, "popping a barrel point-blank should hurt");
+    }
+
+    #[test]
+    fn lava_burns_the_player_at_the_tuned_rate() {
+        let mut g = open_room();
+        g.cur_map[2][2] = b'~'; // the tile the player is standing on
+        g.has_hazard = true;
+
+        for _ in 0..60 {
+            g.update_hazard(1.0 / 60.0);
+        }
+        let burned = 100 - g.player.health;
+        assert!(
+            (burned - HAZARD_DPS as i32).abs() <= 1,
+            "one second in lava should cost about {} health, took {}",
+            HAZARD_DPS,
+            burned
+        );
+
+        // Stepping off stops the burn.
+        g.player.x = 4.5;
+        let health = g.player.health;
+        for _ in 0..60 {
+            g.update_hazard(1.0 / 60.0);
+        }
+        assert_eq!(g.player.health, health, "dry ground should not burn");
+    }
+
+    #[test]
+    fn barons_answer_range_with_a_three_way_volley() {
+        let mut g = open_room();
+        put_enemy(&mut g, 0, 8.5, 2.5, EN_BARON);
+        g.update_enemies(1.0 / 60.0);
+        let live = g.fireballs.iter().filter(|f| f.alive).count();
+        assert_eq!(live, 3, "a baron should open with a fan of three fireballs");
+        assert!(g.fireballs[0].dmg > 12, "baron fire should hit harder than imp fire");
     }
 }

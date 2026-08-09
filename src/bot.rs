@@ -24,8 +24,10 @@ impl Game {
     }
 
     /// BFS distance field (in tiles) from (tx,ty) over all walkable cells;
-    /// unreachable cells stay -1.
-    pub fn bot_field(&self, tx: i32, ty: i32) -> [[i32; MAP_W]; MAP_H] {
+    /// unreachable cells stay -1. With `avoid_hazard` the search refuses to
+    /// cross lava, so routes prefer dry ground; callers fall back to the
+    /// permissive field when that would strand a target.
+    pub fn bot_field_ex(&self, tx: i32, ty: i32, avoid_hazard: bool) -> [[i32; MAP_W]; MAP_H] {
         let mut field = [[-1i32; MAP_W]; MAP_H];
         if tx < 0 || tx >= MAP_W as i32 || ty < 0 || ty >= MAP_H as i32 || self.map_blocked(tx, ty) {
             return field;
@@ -52,6 +54,9 @@ impl Game {
                 if field[ny as usize][nx as usize] != -1 || self.map_blocked(nx, ny) {
                     continue;
                 }
+                if avoid_hazard && self.map_hazard(nx, ny) {
+                    continue;
+                }
                 field[ny as usize][nx as usize] = field[cy as usize][cx as usize] + 1;
                 qx[tail] = nx;
                 qy[tail] = ny;
@@ -59,6 +64,11 @@ impl Game {
             }
         }
         field
+    }
+
+    /// Hazard-avoiding distance field — the one the bot navigates by.
+    pub fn bot_field(&self, tx: i32, ty: i32) -> [[i32; MAP_W]; MAP_H] {
+        self.bot_field_ex(tx, ty, true)
     }
 
     pub fn bot_think(&mut self, dt: f64) {
@@ -95,9 +105,24 @@ impl Game {
         let py = self.player.y;
 
         // Reachability field rooted at the player: pf[cell] >= 0 means we can
-        // walk there. Lets the bot ignore targets sealed behind walls.
-        let pf = self.bot_field(px as i32, py as i32);
-        let reach = |wx: f64, wy: f64| pf[wy as usize][wx as usize] >= 0;
+        // walk there. Lets the bot ignore targets sealed behind walls. This one
+        // is allowed to cross lava — nothing should be written off as
+        // unreachable just because it sits past a burn; the *routing* field
+        // below is what prefers dry ground.
+        let pf = self.bot_field_ex(px as i32, py as i32, false);
+        // Goal cost is *path* distance in tiles, straight off the BFS field.
+        // Straight-line distance is the wrong metric in a maze: a target two
+        // tiles away through a wall can be forty tiles away on foot, and ranking
+        // it above one genuinely down the corridor makes the bot yo-yo between
+        // the two routes and never arrive at either.
+        let cost = |wx: f64, wy: f64| -> Option<f64> {
+            let v = pf[wy as usize][wx as usize];
+            if v >= 0 {
+                Some(v as f64)
+            } else {
+                None
+            }
+        };
 
         // ---- Pick a goal: survival pickups first, else nearest enemy, else
         //      any leftover pickup. A pickup must be reachable; an enemy must be
@@ -118,13 +143,35 @@ impl Game {
                 if !((low_hp && p.kind == PU_HEALTH) || (low_ammo && p.kind == PU_AMMO)) {
                     continue;
                 }
-                if !reach(p.x, p.y) {
+                let Some(d) = cost(p.x, p.y) else { continue };
+                if d < best {
+                    best = d;
+                    gx = p.x;
+                    gy = p.y;
+                    goal_kind = 2;
+                }
+            }
+        }
+        // A gun it doesn't own yet is worth a short detour: the rifle triples
+        // the bot's damage per shot, which is the difference between trading
+        // with a baron and losing to one. Kept to a nearby, healthy detour so it
+        // never goes sightseeing across the map mid-fight.
+        if goal_kind == 0 && self.player.health >= 50 {
+            for i in 0..MAX_PICKUPS {
+                let p = self.pickups[i];
+                if !p.alive {
                     continue;
                 }
-                let dx = p.x - px;
-                let dy = p.y - py;
-                let d = dx * dx + dy * dy;
-                if d < best {
+                let wp = match p.kind {
+                    PU_SHOTGUN => WP_SHOTGUN,
+                    PU_RIFLE => WP_RIFLE,
+                    _ => continue,
+                };
+                if self.player.weapons[wp as usize] {
+                    continue;
+                }
+                let Some(d) = cost(p.x, p.y) else { continue };
+                if d < best && d < 8.0 {
                     best = d;
                     gx = p.x;
                     gy = p.y;
@@ -139,12 +186,18 @@ impl Game {
                 if !e.alive {
                     continue;
                 }
-                if !reach(e.x, e.y) && !self.bot_los(px, py, e.x, e.y) {
-                    continue;
-                }
-                let dx = e.x - px;
-                let dy = e.y - py;
-                let d = dx * dx + dy * dy;
+                // Walkable-reachable enemies are ranked by path distance; one
+                // that's only visible (e.g. across a gap it can't walk) is still
+                // shootable, so it competes on straight-line distance.
+                let d = match cost(e.x, e.y) {
+                    Some(d) => d,
+                    None => {
+                        if !self.bot_los(px, py, e.x, e.y) {
+                            continue;
+                        }
+                        ((e.x - px) * (e.x - px) + (e.y - py) * (e.y - py)).sqrt()
+                    }
+                };
                 if d < best {
                     best = d;
                     gx = e.x;
@@ -154,19 +207,24 @@ impl Game {
                 }
             }
             // Hysteresis: keep hunting the previous target while it's alive
-            // and viable unless the new candidate is under half its distance
-            // (0.25 in squared distance). Without this, two equidistant
-            // enemies behind opposite walls flip the BFS waypoint every
-            // frame and the bot dithers in place forever.
+            // and viable unless the new candidate is under half its distance.
+            // Without this, two equidistant enemies behind opposite walls flip
+            // the BFS waypoint every frame and the bot dithers in place forever.
             if goal_kind == 1 {
                 let t = self.bot.target;
                 if t >= 0 && (t as usize) < MAX_ENEMIES && t as usize != best_i {
                     let e = self.enemies[t as usize];
-                    if e.alive && (reach(e.x, e.y) || self.bot_los(px, py, e.x, e.y)) {
-                        let dx = e.x - px;
-                        let dy = e.y - py;
-                        let dt2 = dx * dx + dy * dy;
-                        if best > 0.25 * dt2 {
+                    let prev = if !e.alive {
+                        None
+                    } else {
+                        cost(e.x, e.y).or_else(|| {
+                            self.bot_los(px, py, e.x, e.y).then(|| {
+                                ((e.x - px) * (e.x - px) + (e.y - py) * (e.y - py)).sqrt()
+                            })
+                        })
+                    };
+                    if let Some(prev) = prev {
+                        if best > 0.5 * prev {
                             gx = e.x;
                             gy = e.y;
                             best_i = t as usize;
@@ -182,17 +240,12 @@ impl Game {
                 if !p.alive {
                     continue;
                 }
-                // The bot only values consumables (health/ammo); weapon pickups
-                // are a player convenience it never detours for.
+                // Consumables only here — unowned weapons got their own pass
+                // above, and an already-owned gun is worth nothing.
                 if p.kind != PU_HEALTH && p.kind != PU_AMMO {
                     continue;
                 }
-                if !reach(p.x, p.y) {
-                    continue;
-                }
-                let dx = p.x - px;
-                let dy = p.y - py;
-                let d = dx * dx + dy * dy;
+                let Some(d) = cost(p.x, p.y) else { continue };
                 if d < best {
                     best = d;
                     gx = p.x;
@@ -219,7 +272,13 @@ impl Game {
             aim_x = gx;
             aim_y = gy;
         } else {
-            let field = self.bot_field(gx as i32, gy as i32);
+            // Route around lava when a dry path exists; if the goal can only be
+            // reached through fire, re-plan with the permissive field and take
+            // the burn.
+            let mut field = self.bot_field_ex(gx as i32, gy as i32, true);
+            if field[py as usize][px as usize] < 0 {
+                field = self.bot_field_ex(gx as i32, gy as i32, false);
+            }
             let cx = px as i32;
             let cy = py as i32;
             let mut bestv = field[cy as usize][cx as usize];
@@ -307,6 +366,23 @@ impl Game {
             if dl > 1e-6 {
                 mvx += 1.5 * dodge_x / dl;
                 mvy += 1.5 * dodge_y / dl;
+            }
+        }
+        // Standing in lava costs health every frame, so never *hold* the range
+        // sweet spot while burning: when the plan is to stay put, step to an
+        // adjacent dry tile instead (still facing the enemy, so it can shoot on
+        // the way out). Only when the move vector is already zero — overriding a
+        // real move would cancel a deliberate crossing and stall the bot on the
+        // near bank forever.
+        if mvx * mvx + mvy * mvy < 1e-6 && self.map_hazard(px as i32, py as i32) {
+            let (cx, cy) = (px as i32, py as i32);
+            for (ox, oy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (cx + ox, cy + oy);
+                if !self.map_blocked(nx, ny) && !self.map_hazard(nx, ny) {
+                    mvx = (nx as f64 + 0.5) - px;
+                    mvy = (ny as f64 + 0.5) - py;
+                    break;
+                }
             }
         }
 

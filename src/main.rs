@@ -4,7 +4,9 @@
 //! R restart (after death), Esc quit.
 //!
 //! Flags: `--headless` (no window, fixed timestep), `--frames N` (stop after N),
-//! `--bot` (AI plays), `--selftest` (validate levels and exit 0/1).
+//! `--bot` (AI plays), `--selftest` (validate levels and exit 0/1),
+//! `--shot PATH` (dump one frame as a PPM) with `--shot-level N`,
+//! `--shot-pos X,Y` and `--shot-angle DEG` to aim the camera.
 #![allow(dead_code)]
 
 mod audio;
@@ -50,6 +52,8 @@ fn main() {
     let mut max_frames: i64 = -1;
     let mut shot: Option<String> = None;
     let mut shot_level = 0usize;
+    let mut shot_pos: Option<(f64, f64)> = None;
+    let mut shot_angle: Option<f64> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -74,6 +78,21 @@ fn main() {
                     i += 1;
                 }
             }
+            "--shot-pos" => {
+                if i + 1 < args.len() {
+                    let mut it = args[i + 1].split(',').map(|s| s.trim().parse::<f64>());
+                    if let (Some(Ok(x)), Some(Ok(y))) = (it.next(), it.next()) {
+                        shot_pos = Some((x, y));
+                    }
+                    i += 1;
+                }
+            }
+            "--shot-angle" => {
+                if i + 1 < args.len() {
+                    shot_angle = args[i + 1].parse::<f64>().ok().map(|d| d.to_radians());
+                    i += 1;
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -90,6 +109,15 @@ fn main() {
         g.reset_game();
         if shot_level > 0 {
             g.load_level(shot_level.min(LEVEL_COUNT - 1));
+        }
+        // Camera overrides let a shot frame anything in the level, not just
+        // whatever the spawn point happens to face.
+        if let Some((x, y)) = shot_pos {
+            g.player.x = x;
+            g.player.y = y;
+        }
+        if let Some(a) = shot_angle {
+            g.player.angle = a;
         }
         g.show_intro = false;
         g.render_frame();
@@ -152,6 +180,18 @@ fn bot_status(g: &Game, frames: u64) {
         g.level_enemy_count - alive,
         g.level_enemy_count
     );
+    // `DOOM_DEBUG` adds a per-enemy dump — the quickest way to see *which*
+    // enemy a stalled bot is failing to reach.
+    if std::env::var("DOOM_DEBUG").is_ok() {
+        for (i, e) in g.enemies.iter().enumerate() {
+            if e.alive {
+                println!(
+                    "      enemy {i} kind={} at ({:.2},{:.2}) hp={} | player ({:.2},{:.2})",
+                    e.kind, e.x, e.y, e.hp, g.player.x, g.player.y
+                );
+            }
+        }
+    }
 }
 
 /// Headless loop: fixed 60 Hz timestep, no window, no frame pacing — a bounded

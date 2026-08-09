@@ -5,7 +5,7 @@
 use crate::color::{make_color, shade_color};
 use crate::constants::*;
 use crate::game::Game;
-use crate::types::{Enemy, Fireball, Pickup};
+use crate::types::{Barrel, Enemy, Fireball, Pickup};
 
 fn grunt_pixel(u: f64, v: f64, anim: f64) -> Option<u32> {
     let cx0 = u - 0.5;
@@ -335,6 +335,270 @@ fn imp_pixel(u: f64, v: f64, anim: f64) -> Option<u32> {
     None
 }
 
+/// Wraith: a hovering spectre. No legs — the torso frays into a tattered wisp
+/// that ripples with `anim` — a hooded skull face with cold blue eyes, and thin
+/// claw hands held out front. Drawn translucent by the caller.
+fn wraith_pixel(u: f64, v: f64, anim: f64) -> Option<u32> {
+    let cx0 = u - 0.5;
+    let hover = (anim * 1.6).sin() * 0.035;
+    let cy = v - 0.46 - hover;
+    // The whole shape drifts sideways a little, like it's swimming.
+    let cx = cx0 - (anim * 1.1).sin() * 0.02;
+
+    // --- Face details (foreground) ---
+    // Eye glow, brighter core inside a wider halo.
+    for &ex in &[-0.062, 0.062] {
+        let d = (cx - ex) * (cx - ex) + (cy + 0.255) * (cy + 0.255);
+        if d < 0.00035 {
+            return Some(0xF0FFFF);
+        }
+        if d < 0.0016 {
+            return Some(0x60D0FF);
+        }
+        if d < 0.0032 {
+            return Some(0x143048);
+        }
+    }
+    // Hollow mouth slit.
+    if cy > -0.19 && cy < -0.15 && cx.abs() < 0.05 {
+        return Some(0x102030);
+    }
+    // Skull cheekbones under the hood.
+    if cy > -0.24 && cy < -0.10 && cx.abs() < 0.11 {
+        let t = (cy + 0.24) / 0.14;
+        let g = (190.0 - 60.0 * t) as i32;
+        return Some(make_color(g - 30, g - 10, g));
+    }
+
+    // Claws: three thin talons per hand, swinging with the drift.
+    {
+        let swing = (anim * 1.6).cos() * 0.04;
+        let hy = 0.06 + swing;
+        if cy > hy && cy < hy + 0.10 {
+            let mut side = -1;
+            while side <= 1 {
+                for finger in 0..3 {
+                    let fx = side as f64 * (0.19 + finger as f64 * 0.045);
+                    if (cx - fx).abs() < 0.011 {
+                        let t = (cy - hy) / 0.10;
+                        let g = (220.0 - 90.0 * t) as i32;
+                        return Some(make_color(g - 40, g - 10, g));
+                    }
+                }
+                side += 2;
+            }
+        }
+    }
+
+    // --- Body: a hood/shoulder mass tapering into ragged streamers ---
+    // Streamers below the waist: vertical ribbons whose length wobbles.
+    if cy >= 0.10 {
+        let ripple = ((cx * 14.0) + anim * 3.0).sin() * 0.06;
+        let tail_end = 0.44 + ripple;
+        let width = 0.20 * (1.0 - ((cy - 0.10) / 0.40).min(1.0) * 0.55);
+        if cy < tail_end && cx.abs() < width {
+            // Gaps between ribbons so the edge reads as torn cloth.
+            let rib = ((cx * 26.0) + anim).sin();
+            if rib > -0.35 {
+                let t = (cy - 0.10) / 0.36;
+                let b = (150.0 - 90.0 * t) as i32;
+                return Some(make_color(b / 3, b * 2 / 3, b));
+            }
+        }
+        return None;
+    }
+
+    // Shoulders / cowl.
+    let body = cx * cx * 1.5 + (cy + 0.06) * (cy + 0.06) * 0.7;
+    if body < 0.055 {
+        let shade = (1.0 - body * 9.0).max(0.45);
+        let r = (70.0 * shade) as i32;
+        let g = (120.0 * shade) as i32;
+        let b = (165.0 * shade) as i32;
+        return Some(make_color(r, g, b));
+    }
+    // Hood: a pointed cowl over the skull.
+    let head = cx * cx * 1.15 + (cy + 0.27) * (cy + 0.27);
+    if head < 0.030 {
+        let shade = (1.0 - head * 14.0).max(0.35);
+        let r = (60.0 * shade) as i32 + 10;
+        let g = (105.0 * shade) as i32 + 14;
+        let b = (150.0 * shade) as i32 + 20;
+        return Some(make_color(r, g, b));
+    }
+    None
+}
+
+/// Baron: the heavy. A broad armoured brute — plated pauldrons, a scarred
+/// chest, wide sweeping horns and molten eyes. Deliberately bulkier than the
+/// imp so its silhouette reads as "trouble" at a distance.
+fn baron_pixel(u: f64, v: f64, anim: f64) -> Option<u32> {
+    let cx0 = u - 0.5;
+    let cy0 = v - 0.5;
+    let sway = (anim * 1.5).sin() * 0.012;
+    let cx = cx0 - sway;
+    let cy = cy0;
+    let stride = (anim * 1.5).sin() * 0.04;
+
+    // --- Face (foreground) ---
+    // Molten eyes, small and deep-set, with a hot core.
+    for &ex in &[-0.072, 0.072] {
+        let d = (cx - ex) * (cx - ex) * 1.2 + (cy + 0.285) * (cy + 0.285) * 2.0;
+        if d < 0.00030 {
+            return Some(0xFFF0C0);
+        }
+        if d < 0.00130 {
+            return Some(0xFF8018);
+        }
+        if d < 0.00260 {
+            return Some(0x180800);
+        }
+    }
+    // Scowl: a heavy brow bar over each eye, angled down toward the nose.
+    for &side in &[-1.0f64, 1.0] {
+        let bx = (cx * side - 0.03) / 0.11; // 0 at the inner end, 1 at the outer
+        if (0.0..=1.0).contains(&bx) {
+            let by = -0.345 + bx * 0.035; // rises toward the temple
+            if cy > by && cy < by + 0.045 {
+                return Some(0x3E2412);
+            }
+        }
+    }
+    // Snarl: an open maw with a row of tusks.
+    if cy > -0.20 && cy < -0.15 && cx.abs() < 0.10 {
+        let tusk = ((cx * 46.0).sin()).abs() > 0.55;
+        return Some(if tusk { 0xE8E0C0 } else { 0x200606 });
+    }
+
+    // Chest plate: a banded cuirass split by a central seam.
+    if cy > -0.02 && cy < 0.20 && cx.abs() < 0.21 {
+        let t = (cy + 0.02) / 0.22;
+        let base = (128.0 - 46.0 * t) as i32;
+        if cx.abs() < 0.014 {
+            return Some(make_color(base - 40, base - 48, base - 56));
+        }
+        // Two raised bands catch the light across the plate.
+        let band = (cy - 0.045).abs() < 0.015 || (cy - 0.135).abs() < 0.015;
+        let side_fall = (cx.abs() / 0.21 * 26.0) as i32; // rounds the plate off
+        if band {
+            return Some(make_color(base + 34 - side_fall, base + 28 - side_fall, base + 14 - side_fall));
+        }
+        return Some(make_color(base - side_fall, base - 14 - side_fall, base - 30 - side_fall));
+    }
+
+    // Pauldrons: domed plates capping the shoulders, sitting proud of the chest.
+    for &side in &[-1.0f64, 1.0] {
+        let px = cx * side;
+        let d = (px - 0.26) * (px - 0.26) / 0.0130 + (cy + 0.055) * (cy + 0.055) / 0.0085;
+        if d < 1.0 {
+            let base = (155.0 - 60.0 * d) as i32;
+            // Rivets around the plate's rim.
+            if d > 0.72 && ((px * 34.0) as i32 + (cy * 34.0) as i32) % 3 == 0 {
+                return Some(0xE0D8C0);
+            }
+            return Some(make_color(base, base - 18, base - 34));
+        }
+    }
+
+    // Arms hanging outside the plates.
+    if cy > 0.02 && cy < 0.26 && cx.abs() > 0.22 && cx.abs() < 0.34 {
+        let t = (cy - 0.02) / 0.24;
+        let base = (140.0 - 45.0 * t) as i32;
+        return Some(make_color(base, base / 2, base / 3));
+    }
+    // Fists.
+    if cy >= 0.26 && cy < 0.33 && cx.abs() > 0.20 && cx.abs() < 0.34 {
+        return Some(0x8A3A20);
+    }
+
+    // Legs with a slow stride offset, hooves at the bottom.
+    for (i, &lx) in [-0.13, 0.13].iter().enumerate() {
+        let off = if i == 0 { stride } else { -stride };
+        if cy > 0.20 + off && cy < 0.44 + off && (cx - lx).abs() < 0.085 {
+            let t = (cy - 0.20 - off) / 0.24;
+            let base = (120.0 - 40.0 * t) as i32;
+            return Some(make_color(base, base / 2 - 4, base / 3));
+        }
+        if cy >= 0.44 + off && cy < 0.50 + off && (cx - lx).abs() < 0.10 {
+            return Some(0x181008);
+        }
+    }
+
+    // Head: a heavy cranium tapering into a squared-off jaw, so the silhouette
+    // isn't a plain disc.
+    let skull = cx * cx * 1.30 + (cy + 0.315) * (cy + 0.315) * 1.20;
+    let jaw = cy > -0.235 && cy < -0.115 && cx.abs() < 0.155 - (cy + 0.235) * 0.42;
+    if skull < 0.032 || jaw {
+        let shade = (1.0 - skull * 12.0).clamp(0.35, 1.0);
+        let r = (165.0 * shade) as i32 + 20;
+        let g = (85.0 * shade) as i32 + 10;
+        let b = (55.0 * shade) as i32 + 8;
+        return Some(make_color(r, g, b));
+    }
+
+    // Horns: wide, curving up and outward from the temples.
+    for &side in &[-1.0f64, 1.0] {
+        if cy > -0.50 && cy < -0.28 {
+            let t = (cy + 0.50) / 0.22; // 0 at tip, 1 at base
+            let axis = side * (0.34 - 0.16 * t); // sweeps inward toward the skull
+            let half_w = 0.018 + 0.038 * t;
+            if (cx - axis).abs() < half_w {
+                let g = (90.0 + 90.0 * (1.0 - t)) as i32;
+                return Some(make_color(g, g * 9 / 10, g * 7 / 10));
+            }
+        }
+    }
+    None
+}
+
+/// Fuel barrel: a banded drum with a hazard stripe, cylinder-shaded so it reads
+/// as round. `flash` lifts it toward white for the instant before it blows.
+fn barrel_pixel(u: f64, v: f64) -> Option<u32> {
+    let cx = u - 0.5;
+    let cy = v - 0.5;
+    let hw = 0.30;
+    if cx.abs() > hw || cy < -0.42 || cy > 0.44 {
+        return None;
+    }
+    // Round the lid and base corners slightly.
+    let edge = cx.abs() / hw;
+    if (cy < -0.38 || cy > 0.40) && edge > 0.86 {
+        return None;
+    }
+    // Cylinder shading: bright a third of the way in from the left.
+    let round = 1.0 - ((cx + 0.09) / hw).abs().min(1.0).powi(2) * 0.62;
+
+    // Lid: darker ellipse with a filler cap.
+    if cy < -0.34 {
+        if cx.abs() < 0.06 {
+            return Some(0x6A6A56);
+        }
+        let g = (110.0 * round) as i32;
+        return Some(make_color(g, g, g * 3 / 4));
+    }
+    // Rolling hoops.
+    if (cy + 0.16).abs() < 0.028 || (cy - 0.16).abs() < 0.028 {
+        let g = (150.0 * round) as i32;
+        return Some(make_color(g, g - 10, g - 26));
+    }
+    // Hazard stripe across the middle.
+    if cy.abs() < 0.09 {
+        let diag = ((cx * 22.0 + cy * 22.0).sin()) > 0.0;
+        return Some(if diag {
+            make_color((235.0 * round) as i32, (190.0 * round) as i32, (40.0 * round) as i32)
+        } else {
+            make_color((40.0 * round) as i32, (34.0 * round) as i32, (26.0 * round) as i32)
+        });
+    }
+    // Body: olive drum with a little rust mottling.
+    let rust = ((cx * 31.0).sin() * (cy * 27.0).cos()) > 0.72;
+    if rust {
+        return Some(make_color((130.0 * round) as i32, (66.0 * round) as i32, (30.0 * round) as i32));
+    }
+    let g = (128.0 * round) as i32;
+    Some(make_color(g * 3 / 4, g, g / 2))
+}
+
 /// Health pickup: a 3D-shaded cream medkit with a beveled rim and a shaded red
 /// cross. `u,v` in 0..1; returns `None` outside the rounded-rect body.
 fn health_pixel(u: f64, v: f64, _anim: f64) -> Option<u32> {
@@ -451,10 +715,12 @@ impl Game {
     /// (u,v in 0..1) with 2x2 supersampling for anti-aliased edges, darkens
     /// partial-coverage texels into a subtle outline, applies distance `shade`
     /// (or a white hit `flash`), and alpha-blends over the existing pixel by
-    /// sub-pixel coverage. Very large/near sprites fall back to a single sample
+    /// sub-pixel coverage scaled by `alpha` (1.0 = opaque; the wraith is drawn
+    /// see-through). Very large/near sprites fall back to a single sample
     /// (their edges are already many pixels thick, so AA buys little and the
     /// supersample would cost the most there). Columns nearer in the wall `depth`
     /// buffer occlude the sprite.
+    #[allow(clippy::too_many_arguments)]
     fn draw_sprite<F: Fn(f64, f64) -> Option<u32>>(
         &mut self,
         dsx: i32,
@@ -464,6 +730,7 @@ impl Game {
         tx: f64,
         shade: f64,
         flash: bool,
+        alpha: f64,
         sample: F,
     ) {
         let sx0 = dsx.max(0);
@@ -497,7 +764,7 @@ impl Game {
                 if cnt == 0 {
                     continue;
                 }
-                let cov = cnt as f64 / nn as f64;
+                let cov = cnt as f64 / nn as f64 * alpha;
                 let (sr, sg, sb) = if flash {
                     (255.0, 240.0, 240.0)
                 } else {
@@ -532,21 +799,51 @@ impl Game {
 
         let plane_half = (FOV / 2.0).tan();
         let screen_x = (SCREEN_W as f64 / 2.0) * (1.0 + ty / (tx * plane_half));
-        let sprite_h = (SCREEN_H as f64 / tx) as i32;
+        // Kinds differ in bulk, but they all stand on the same floor: scale the
+        // billboard about its feet so a baron towers instead of sinking.
+        let base_h = (SCREEN_H as f64 / tx) as i32;
+        let sprite_h = (base_h as f64 * EN_SCALE[e.kind as usize]) as i32;
         let sprite_w = sprite_h;
+        let feet = SCREEN_H as i32 / 2 + base_h / 2;
         let dsx = (screen_x - sprite_w as f64 / 2.0) as i32;
-        let dsy = -sprite_h / 2 + SCREEN_H as i32 / 2;
+        let dsy = feet - sprite_h;
 
         let shade = (1.0 - tx / MAX_DEPTH).max(0.25);
         let flash = e.hit_flash > 0.0;
+        let alpha = if e.kind == EN_WRAITH { 0.72 } else { 1.0 };
         let (anim, kind) = (e.anim, e.kind);
-        self.draw_sprite(dsx, dsy, sprite_w, sprite_h, tx, shade, flash, move |u, v| {
-            if kind == EN_IMP {
-                imp_pixel(u, v, anim)
-            } else {
-                grunt_pixel(u, v, anim)
+        self.draw_sprite(dsx, dsy, sprite_w, sprite_h, tx, shade, flash, alpha, move |u, v| {
+            match kind {
+                EN_IMP => imp_pixel(u, v, anim),
+                EN_WRAITH => wraith_pixel(u, v, anim),
+                EN_BARON => baron_pixel(u, v, anim),
+                _ => grunt_pixel(u, v, anim),
             }
         });
+    }
+
+    fn draw_barrel(&mut self, b: Barrel) {
+        let (px, py, ang) = (self.player.x, self.player.y, self.player.angle);
+        let dx = b.x - px;
+        let dy = b.y - py;
+        let cs = (-ang).cos();
+        let sn = (-ang).sin();
+        let tx = dx * cs - dy * sn;
+        let ty = dx * sn + dy * cs;
+        if tx <= 0.1 {
+            return;
+        }
+
+        let plane_half = (FOV / 2.0).tan();
+        let screen_x = (SCREEN_W as f64 / 2.0) * (1.0 + ty / (tx * plane_half));
+        let base_h = (SCREEN_H as f64 / tx) as i32;
+        let sz = ((base_h as f64 * 0.72) as i32).max(4);
+        let feet = SCREEN_H as i32 / 2 + base_h / 2;
+        let dsx = (screen_x - sz as f64 / 2.0) as i32;
+        let dsy = feet - sz;
+
+        let shade = (1.0 - tx / MAX_DEPTH).max(0.3);
+        self.draw_sprite(dsx, dsy, sz, sz, tx, shade, b.hit_flash > 0.0, 1.0, barrel_pixel);
     }
 
     fn draw_fireball(&mut self, fb: Fireball) {
@@ -619,7 +916,7 @@ impl Game {
 
         let shade = (1.0 - tx / MAX_DEPTH).max(0.3);
         let kind = p.kind;
-        self.draw_sprite(dsx, dsy, sz, sz, tx, shade, false, move |u, v| match kind {
+        self.draw_sprite(dsx, dsy, sz, sz, tx, shade, false, 1.0, move |u, v| match kind {
             PU_HEALTH => health_pixel(u, v, 0.0),
             PU_AMMO => ammo_pixel(u, v, 0.0),
             _ => weapon_pixel(u, v, kind),
@@ -674,9 +971,9 @@ impl Game {
     }
 
     pub fn render_sprites(&mut self) {
-        // (distance², kind, index); kind 0=enemy 1=pickup 2=fireball.
+        // (distance², kind, index); kind 0=enemy 1=pickup 2=fireball 3=barrel.
         // Fixed-capacity scratch on the stack — no per-frame allocation.
-        const MAX_SPRITES: usize = MAX_ENEMIES + MAX_PICKUPS + MAX_FIREBALLS;
+        const MAX_SPRITES: usize = MAX_ENEMIES + MAX_PICKUPS + MAX_FIREBALLS + MAX_BARRELS;
         let mut refs = [(0.0f64, 0u8, 0usize); MAX_SPRITES];
         let mut n = 0;
         let (px, py) = (self.player.x, self.player.y);
@@ -708,6 +1005,15 @@ impl Game {
             refs[n] = (dx * dx + dy * dy, 2, i);
             n += 1;
         }
+        for i in 0..MAX_BARRELS {
+            if !self.barrels[i].alive {
+                continue;
+            }
+            let dx = self.barrels[i].x - px;
+            let dy = self.barrels[i].y - py;
+            refs[n] = (dx * dx + dy * dy, 3, i);
+            n += 1;
+        }
         // Far-to-near so nearer sprites overwrite farther ones (stable, so
         // equal distances keep the same draw order as before).
         let refs = &mut refs[..n];
@@ -716,7 +1022,8 @@ impl Game {
             match kind {
                 0 => self.draw_enemy(self.enemies[idx]),
                 1 => self.draw_pickup(self.pickups[idx]),
-                _ => self.draw_fireball(self.fireballs[idx]),
+                2 => self.draw_fireball(self.fireballs[idx]),
+                _ => self.draw_barrel(self.barrels[idx]),
             }
         }
         self.draw_particles();

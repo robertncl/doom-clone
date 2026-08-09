@@ -12,7 +12,7 @@ const MAX_SOUNDS: usize = 16;
 const AUDIO_BUF_MAX: usize = 4096;
 
 const SOUND_DUR: [f64; SND_KIND_MAX] =
-    [0.20, 0.15, 0.50, 0.30, 0.25, 0.35, 0.35, 0.90, 1.60, 0.40];
+    [0.20, 0.15, 0.50, 0.30, 0.25, 0.35, 0.35, 0.90, 1.60, 0.40, 0.70];
 
 #[derive(Clone, Copy, Default)]
 struct ActiveSound {
@@ -104,6 +104,18 @@ fn sound_sample(kind: usize, t: f64, seed: &mut u32) -> f64 {
             let freq = if t < 0.12 { 500.0 } else { 750.0 };
             let click = ((audio_noise(seed) >> 16) as i32 - 32768) as f64 / 32768.0;
             (t * freq * tau).sin() * env * 0.7 + click * (-t * 40.0).exp() * 0.3
+        }
+        SND_EXPLOSION => {
+            // A barrel going up: a noise crack over a low body that decays
+            // slowly into a rumble.
+            let crack = (-t * 26.0).exp();
+            let body = (-t * 3.2).exp();
+            let n = ((audio_noise(seed) >> 16) as i32 - 32768) as f64 / 32768.0;
+            let mut freq = 90.0 - t * 60.0;
+            if freq < 30.0 {
+                freq = 30.0;
+            }
+            n * (crack * 0.7 + body * 0.35) + (t * freq * tau).sin() * body * 0.6
         }
         _ => 0.0,
     }

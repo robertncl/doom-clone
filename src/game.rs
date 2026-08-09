@@ -23,12 +23,22 @@ pub struct Game {
     pub level_clear_timer: f64,
     pub pain_flash: f64,
     pub global_time: f64,
+    /// Fractional lava damage carried between frames, so a burn of
+    /// `HAZARD_DPS` applies smoothly instead of once per whole point.
+    pub hazard_burn: f64,
+    /// Cooldown so a long lava crossing doesn't retrigger the hurt sound every
+    /// time another whole point of burn lands.
+    pub hazard_snd_t: f64,
+    /// True when the current level contains any `~` tile. The floor cast pays
+    /// for the per-pixel hazard lookup only when this is set.
+    pub has_hazard: bool,
 
     pub player: Player,
     pub enemies: [Enemy; MAX_ENEMIES],
     pub fireballs: [Fireball; MAX_FIREBALLS],
     pub parts: [Particle; MAX_PARTICLES],
     pub pickups: [Pickup; MAX_PICKUPS],
+    pub barrels: [Barrel; MAX_BARRELS],
 
     pub pixels: Vec<u32>,
     pub depth: Vec<f64>,
@@ -59,11 +69,15 @@ impl Game {
             level_clear_timer: 0.0,
             pain_flash: 0.0,
             global_time: 0.0,
+            hazard_burn: 0.0,
+            hazard_snd_t: 0.0,
+            has_hazard: false,
             player: Player::default(),
             enemies: [Enemy::default(); MAX_ENEMIES],
             fireballs: [Fireball::default(); MAX_FIREBALLS],
             parts: [Particle::default(); MAX_PARTICLES],
             pickups: [Pickup::default(); MAX_PICKUPS],
+            barrels: [Barrel::default(); MAX_BARRELS],
             pixels: vec![0; SCREEN_W * SCREEN_H],
             depth: vec![0.0; SCREEN_W],
             cur_map: [[b'.'; MAP_W]; MAP_H],
@@ -105,6 +119,7 @@ impl Game {
             b'B' => WALL_METAL,
             b'D' => WALL_WOOD,
             b'H' => WALL_HELL,
+            b'T' => WALL_TECH,
             _ => WALL_NONE,
         }
     }
@@ -113,11 +128,22 @@ impl Game {
         self.map_wall_type(mx, my) != WALL_NONE
     }
 
+    /// True for lava tiles: walkable, but they burn anything standing on them.
+    /// Out-of-bounds is not hazardous (it's solid wall anyway).
+    pub fn map_hazard(&self, mx: i32, my: i32) -> bool {
+        if mx < 0 || mx >= MAP_W as i32 || my < 0 || my >= MAP_H as i32 {
+            return false;
+        }
+        self.cur_map[my as usize][mx as usize] == b'~'
+    }
+
     pub fn reset_transients(&mut self) {
         self.enemies = [Enemy::default(); MAX_ENEMIES];
         self.fireballs = [Fireball::default(); MAX_FIREBALLS];
         self.parts = [Particle::default(); MAX_PARTICLES];
         self.pickups = [Pickup::default(); MAX_PICKUPS];
+        self.barrels = [Barrel::default(); MAX_BARRELS];
+        self.hazard_burn = 0.0;
     }
 
     pub fn reset_game(&mut self) {
@@ -136,18 +162,23 @@ impl Game {
 
     /// Attempts to move to (nx, ny), sliding along walls one axis at a time.
     /// Returns a bitmask: bit 0 set if the X move succeeded, bit 1 if Y did.
+    ///
+    /// Only the *leading* edge of the body is tested. Checking the trailing edge
+    /// as well would also veto moves that pull the body back out of a wall it
+    /// already overlaps — which is reachable, because sliding along one axis can
+    /// carry you sideways into the other axis's pad band. Once there, every step
+    /// was rejected and the velocity zeroed, so the body could never build up the
+    /// single large step needed to escape: it stuck to the wall permanently.
     pub fn try_move(&mut self, nx: f64, ny: f64) -> i32 {
         let pad = 0.18;
         let mut moved = 0;
-        if !self.map_blocked((nx + pad) as i32, self.player.y as i32)
-            && !self.map_blocked((nx - pad) as i32, self.player.y as i32)
-        {
+        let lead_x = if nx > self.player.x { nx + pad } else { nx - pad };
+        if !self.map_blocked(lead_x as i32, self.player.y as i32) {
             self.player.x = nx;
             moved |= 1;
         }
-        if !self.map_blocked(self.player.x as i32, (ny + pad) as i32)
-            && !self.map_blocked(self.player.x as i32, (ny - pad) as i32)
-        {
+        let lead_y = if ny > self.player.y { ny + pad } else { ny - pad };
+        if !self.map_blocked(self.player.x as i32, lead_y as i32) {
             self.player.y = ny;
             moved |= 2;
         }
