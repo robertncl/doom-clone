@@ -3,6 +3,7 @@
 
 use crate::audio::Audio;
 use crate::constants::*;
+use crate::difficulty::SKILL_NORMAL;
 use crate::textures::Textures;
 use crate::types::*;
 use std::io::{BufRead, Write};
@@ -32,6 +33,8 @@ pub struct Game {
     /// True when the current level contains any `~` tile. The floor cast pays
     /// for the per-pixel hazard lookup only when this is set.
     pub has_hazard: bool,
+    /// Difficulty, `SKILL_*` (see difficulty.rs). Survives restarts.
+    pub skill: usize,
 
     pub player: Player,
     pub enemies: [Enemy; MAX_ENEMIES],
@@ -76,6 +79,7 @@ impl Game {
             hazard_burn: 0.0,
             hazard_snd_t: 0.0,
             has_hazard: false,
+            skill: SKILL_NORMAL,
             player: Player::default(),
             enemies: [Enemy::default(); MAX_ENEMIES],
             fireballs: [Fireball::default(); MAX_FIREBALLS],

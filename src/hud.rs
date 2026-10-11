@@ -3,7 +3,14 @@
 
 use crate::color::make_color;
 use crate::constants::*;
+use crate::difficulty::{SKILL_COLORS, SKILL_COUNT, SKILL_NAMES};
 use crate::game::Game;
+
+/// `c` with each channel multiplied by `num/den`.
+fn scale_rgb(c: u32, num: u32, den: u32) -> u32 {
+    let ch = |shift: u32| ((c >> shift) & 0xFF) * num / den;
+    (ch(16) << 16) | (ch(8) << 8) | ch(0)
+}
 
 // Big 3x5 digit font (3x3 px blocks), low 3 bits per row. Used for HUD numbers.
 const GLYPH: [[u8; 5]; 10] = [
@@ -389,6 +396,11 @@ impl Game {
         let sbuf = format!("SCORE {}", self.score);
         self.draw_text(&sbuf, (SCREEN_W as i32 - text_width(&sbuf)) / 2, y, 0xFFE060);
 
+        y += 16;
+        let kbuf = format!("SKILL {}", SKILL_NAMES[self.skill]);
+        let kc = SKILL_COLORS[self.skill];
+        self.draw_text(&kbuf, (SCREEN_W as i32 - text_width(&kbuf)) / 2, y, kc);
+
         y += 22;
         if self.final_rank > 0 {
             let rbuf = format!("NEW HIGH SCORE RANK {}", self.final_rank);
@@ -477,40 +489,42 @@ impl Game {
         self.draw_text(
             "DOOM CLONE",
             x0 + (w - text_width("DOOM CLONE")) / 2,
-            y0 + 20,
+            y0 + 18,
             0xFFC040,
         );
         self.draw_text(
             "CONTROLS",
             x0 + (w - text_width("CONTROLS")) / 2,
-            y0 + 56,
+            y0 + 42,
             0xE0E0E0,
         );
 
         let lx = x0 + 60;
-        let mut ty = y0 + 90;
-        self.draw_text("W S", lx, ty, 0x60C0FF);
-        self.draw_text("MOVE", lx + 160, ty, 0xC0C0C0);
-        ty += 22;
-        self.draw_text("A D", lx, ty, 0x60C0FF);
-        self.draw_text("STRAFE", lx + 160, ty, 0xC0C0C0);
-        ty += 22;
-        self.draw_text("ARROWS", lx, ty, 0x60C0FF);
-        self.draw_text("TURN", lx + 160, ty, 0xC0C0C0);
-        ty += 22;
-        self.draw_text("SPACE", lx, ty, 0x60C0FF);
-        self.draw_text("SHOOT", lx + 160, ty, 0xC0C0C0);
-        ty += 22;
-        self.draw_text("R", lx, ty, 0x60C0FF);
-        self.draw_text("RESTART", lx + 160, ty, 0xC0C0C0);
-        ty += 22;
-        self.draw_text("ESC", lx, ty, 0x60C0FF);
-        self.draw_text("QUIT", lx + 160, ty, 0xC0C0C0);
-        ty += 24;
+        let mut ty = y0 + 64;
+        for (key, action) in [
+            ("W S", "MOVE"),
+            ("A D", "STRAFE"),
+            ("ARROWS", "TURN"),
+            ("SPACE", "SHOOT"),
+            ("1 2 3", "WEAPON"),
+            ("R", "RESTART"),
+            ("ESC", "QUIT"),
+        ] {
+            self.draw_text(key, lx, ty, 0x60C0FF);
+            self.draw_text(action, lx + 160, ty, 0xC0C0C0);
+            ty += 15;
+        }
+        ty += 2;
 
         // divider
         self.fill_rect(x0 + 30, ty, w - 60, 1, 0x60381C);
-        ty += 12;
+        ty += 10;
+        self.draw_skill_slider(x0, w, ty);
+        ty += 66;
+
+        // divider
+        self.fill_rect(x0 + 30, ty, w - 60, 1, 0x60381C);
+        ty += 10;
 
         self.draw_text(
             "HIGH SCORES",
@@ -518,24 +532,71 @@ impl Game {
             ty,
             0xFFC040,
         );
-        ty += 18;
+        ty += 16;
 
         for i in 0..MAX_HIGHSCORES {
             let buf = format!("{}. {}", i + 1, self.high_scores[i]);
             self.draw_text(&buf, x0 + (w - text_width(&buf)) / 2, ty, 0xC0A080);
-            ty += 14;
+            ty += 12;
         }
-        ty += 10;
+        ty += 6;
 
         // blinking prompt
         if ((self.global_time * 2.0) as i32) & 1 != 0 {
             self.draw_text(
-                "PRESS ANY KEY",
-                x0 + (w - text_width("PRESS ANY KEY")) / 2,
+                "PRESS SPACE TO START",
+                x0 + (w - text_width("PRESS SPACE TO START")) / 2,
                 ty,
                 0x40E040,
             );
         }
+    }
+
+    /// The difficulty slider: one segment per skill, lit up to the current one
+    /// in its gradient colour, with a knob on the selection and arrows that dim
+    /// at the ends. Centred in the panel column `x0..x0+w`, top at `y`.
+    fn draw_skill_slider(&mut self, x0: i32, w: i32, y: i32) {
+        self.draw_text("DIFFICULTY", x0 + (w - text_width("DIFFICULTY")) / 2, y, 0xE0E0E0);
+
+        let seg_w = 48;
+        let gap = 6;
+        let n = SKILL_COUNT as i32;
+        let bar_w = n * seg_w + (n - 1) * gap;
+        let bx = x0 + (w - bar_w) / 2;
+        let by = y + 20;
+        let bh = 10;
+        let sel = self.skill as i32;
+        for i in 0..n {
+            let sx = bx + i * (seg_w + gap);
+            let c = SKILL_COLORS[i as usize];
+            if i <= sel {
+                self.fill_rect(sx, by, seg_w, bh, c);
+            } else {
+                // Unlit: a dark well with the colour as a thin rim, so the
+                // whole gradient stays visible.
+                self.fill_rect(sx, by, seg_w, bh, 0x201008);
+                self.fill_rect(sx, by + bh - 2, seg_w, 2, scale_rgb(c, 1, 3));
+            }
+        }
+        // Knob over the selected segment.
+        let kx = bx + sel * (seg_w + gap) + seg_w / 2 - 4;
+        self.fill_rect(kx, by - 4, 8, bh + 8, 0x101010);
+        self.fill_rect(kx + 1, by - 3, 6, bh + 6, 0xF0F0F0);
+
+        // Arrows either side, dimmed when the slider can't go that way.
+        let ay = by + bh / 2;
+        let lc = if sel > 0 { 0xF0F0F0 } else { 0x403020 };
+        let rc = if sel < n - 1 { 0xF0F0F0 } else { 0x403020 };
+        for k in 0..5 {
+            self.fill_rect(bx - 18 + k, ay - k, 1, 2 * k + 1, lc);
+            self.fill_rect(bx + bar_w + 17 - k, ay - k, 1, 2 * k + 1, rc);
+        }
+
+        let name = SKILL_NAMES[self.skill];
+        let nc = SKILL_COLORS[self.skill];
+        self.draw_text(name, x0 + (w - text_width(name)) / 2, by + 18, nc);
+        let hint = "LEFT RIGHT TO CHANGE";
+        self.draw_text(hint, x0 + (w - text_width(hint)) / 2, by + 34, 0x807060);
     }
 
     pub fn draw_minimap(&mut self) {

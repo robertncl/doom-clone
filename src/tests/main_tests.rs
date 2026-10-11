@@ -74,6 +74,17 @@ fn value_flags_with_no_value_are_ignored() {
 }
 
 #[test]
+fn skill_takes_a_number_or_a_name() {
+    use crate::difficulty::*;
+    assert_eq!(parse_args(&argv(&["--skill", "4"])).skill, Some(SKILL_HARD));
+    assert_eq!(parse_args(&argv(&["--skill", "baby"])).skill, Some(SKILL_BABY));
+    assert_eq!(parse_args(&argv(&["--skill", "9"])).skill, None, "junk keeps the default");
+    assert_eq!(parse_args(&argv(&["--skill"])).skill, None);
+    let g = shot_game(&parse_args(&argv(&["--shot", "x.ppm", "--skill", "5"])));
+    assert_eq!(g.skill, SKILL_NIGHTMARE);
+}
+
+#[test]
 fn unknown_flags_are_skipped() {
     let a = parse_args(&argv(&["--wat", "-x", "positional", "--bot"]));
     assert!(a.bot, "a real flag after junk is still honoured");
