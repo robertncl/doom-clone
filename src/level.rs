@@ -11,6 +11,7 @@
 //! core built around a lava lake with two barons (9).
 
 use crate::constants::*;
+use crate::difficulty::{scale, Tuning};
 use crate::game::Game;
 
 pub static LEVELS: [[&str; MAP_H]; LEVEL_COUNT] = [
@@ -200,6 +201,7 @@ impl Game {
     /// than only the one that ships.
     pub fn load_level_map(&mut self, map: &[&str; MAP_H], n: usize) {
         self.reset_transients();
+        let tune = Tuning::at(self.skill, n);
         let mut e_idx = 0usize;
         let mut p_idx = 0usize;
         let mut b_idx = 0usize;
@@ -232,7 +234,7 @@ impl Game {
                             self.enemies[e_idx].y = y as f64 + 0.5;
                             self.enemies[e_idx].kind = kind;
                             self.enemies[e_idx].alive = true;
-                            self.enemies[e_idx].hp = EN_HP[kind as usize];
+                            self.enemies[e_idx].hp = scale(EN_HP[kind as usize], tune.enemy_hp);
                             // Stagger the animation phase by tile so a pack of
                             // the same kind doesn't move in lockstep.
                             self.enemies[e_idx].anim = (x + y) as f64 * 0.7 + kind as f64 * 0.9;

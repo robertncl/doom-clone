@@ -3,6 +3,7 @@
 //! progression together.
 
 use crate::constants::*;
+use crate::difficulty::{scale, SKILL_COUNT};
 use crate::game::Game;
 use crate::types::Enemy;
 use std::f64::consts::PI;
@@ -179,6 +180,9 @@ impl Game {
     }
 
     pub(crate) fn update_enemies(&mut self, dt: f64) {
+        // Skill scales speed, attack rate and damage; the numbers below are
+        // the NORMAL values.
+        let t = self.tuning();
         for i in 0..MAX_ENEMIES {
             let mut e = self.enemies[i];
             if e.hit_flash > 0.0 {
@@ -206,17 +210,17 @@ impl Game {
             match e.kind {
                 EN_GRUNT => {
                     // Walks straight at you and swings.
-                    let speed = 1.1 * dt;
+                    let speed = 1.1 * t.enemy_speed * dt;
                     if dist > 0.7 {
                         self.move_enemy(&mut e, nx * speed, ny * speed);
                     } else if e.atk_cool <= 0.0 {
-                        e.atk_cool = 1.0;
-                        self.melee_player(7);
+                        e.atk_cool = 1.0 / t.enemy_rate;
+                        self.melee_player(scale(7, t.enemy_dmg));
                     }
                 }
                 EN_IMP => {
                     // Keeps medium distance and throws fireballs.
-                    let speed = 0.9 * dt;
+                    let speed = 0.9 * t.enemy_speed * dt;
                     if dist > 4.5 {
                         self.move_enemy(&mut e, nx * speed, ny * speed);
                     } else if dist < 2.5 {
@@ -225,9 +229,10 @@ impl Game {
                     if e.atk_cool <= 0.0 && dist < 8.0 && self.player.health > 0 {
                         let (ex, ey) = (e.x, e.y);
                         let (tx, ty) = (self.player.x, self.player.y);
-                        e.atk_cool = 2.0 + self.rand_f64();
+                        e.atk_cool = (2.0 + self.rand_f64()) / t.enemy_rate;
                         self.enemies[i] = e;
-                        self.spawn_fireball(ex, ey, tx, ty, 0.0, 3.0, 12);
+                        let (spd, dmg) = (3.0 * t.fireball_speed, scale(12, t.enemy_dmg));
+                        self.spawn_fireball(ex, ey, tx, ty, 0.0, spd, dmg);
                         continue;
                     }
                 }
@@ -236,7 +241,7 @@ impl Game {
                     // straight line, so it's awkward to keep in the crosshair.
                     // Alternating orbit direction by index keeps a pack from
                     // stacking into a single silhouette.
-                    let speed = 2.0 * dt;
+                    let speed = 2.0 * t.enemy_speed * dt;
                     if dist > 0.75 {
                         let side = if i & 1 == 0 { 1.0 } else { -1.0 };
                         let swirl = (self.global_time * 2.2 + e.anim).sin() * 0.8 * side;
@@ -245,28 +250,29 @@ impl Game {
                         let l = (mx * mx + my * my).sqrt().max(1e-6);
                         self.move_enemy(&mut e, mx / l * speed, my / l * speed);
                     } else if e.atk_cool <= 0.0 {
-                        e.atk_cool = 0.9;
-                        self.melee_player(8);
+                        e.atk_cool = 0.9 / t.enemy_rate;
+                        self.melee_player(scale(8, t.enemy_dmg));
                     }
                 }
                 _ => {
                     // BARON: a bruiser. Closes to brawling range, hits hard up
                     // close, and lobs a three-way fireball fan from further out
                     // so backing off isn't a free answer.
-                    let speed = 1.3 * dt;
+                    let speed = 1.3 * t.enemy_speed * dt;
                     if dist > 1.4 {
                         self.move_enemy(&mut e, nx * speed, ny * speed);
                     } else if e.atk_cool <= 0.0 {
-                        e.atk_cool = 1.3;
-                        self.melee_player(18);
+                        e.atk_cool = 1.3 / t.enemy_rate;
+                        self.melee_player(scale(18, t.enemy_dmg));
                     }
                     if e.atk_cool <= 0.0 && dist >= 1.4 && dist < 10.0 && self.player.health > 0 {
                         let (ex, ey) = (e.x, e.y);
                         let (tx, ty) = (self.player.x, self.player.y);
-                        e.atk_cool = 2.4 + self.rand_f64();
+                        e.atk_cool = (2.4 + self.rand_f64()) / t.enemy_rate;
                         self.enemies[i] = e;
+                        let (spd, dmg) = (3.6 * t.fireball_speed, scale(13, t.enemy_dmg));
                         for k in -1..=1 {
-                            self.spawn_fireball(ex, ey, tx, ty, k as f64 * 0.22, 3.6, 13);
+                            self.spawn_fireball(ex, ey, tx, ty, k as f64 * 0.22, spd, dmg);
                         }
                         continue;
                     }
@@ -402,6 +408,7 @@ impl Game {
     }
 
     pub(crate) fn update_pickups(&mut self) {
+        let supply = self.tuning().supply;
         for i in 0..MAX_PICKUPS {
             if !self.pickups[i].alive {
                 continue;
@@ -412,12 +419,12 @@ impl Game {
                 let (px, py, kind) = (self.pickups[i].x, self.pickups[i].y, self.pickups[i].kind);
                 let color = match kind {
                     PU_HEALTH => {
-                        self.player.health = (self.player.health + 25).min(100);
+                        self.player.health = (self.player.health + scale(25, supply)).min(100);
                         self.audio.play(SND_PICKUP_HEALTH);
                         0xFFC0C0
                     }
                     PU_AMMO => {
-                        self.player.ammo = (self.player.ammo + 12).min(99);
+                        self.player.ammo = (self.player.ammo + scale(12, supply)).min(99);
                         self.audio.play(SND_PICKUP_AMMO);
                         0xFFE060
                     }
@@ -541,6 +548,20 @@ impl Game {
                 self.running = false;
                 self.key_edge[K_QUIT] = false;
                 return;
+            }
+            // Left/right (arrows or A/D) move the difficulty slider instead of
+            // starting the game; it stops at either end.
+            for (keys, step) in [([K_TURNL, K_STRAFEL], -1i32), ([K_TURNR, K_STRAFER], 1)] {
+                if keys.iter().any(|&k| self.key_edge[k]) {
+                    for k in keys {
+                        self.key_edge[k] = false;
+                    }
+                    let s = (self.skill as i32 + step).clamp(0, SKILL_COUNT as i32 - 1) as usize;
+                    if s != self.skill {
+                        self.set_skill(s);
+                        self.audio.play(SND_PICKUP_AMMO);
+                    }
+                }
             }
             for i in 0..K_COUNT {
                 if i == K_QUIT {

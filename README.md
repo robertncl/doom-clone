@@ -17,8 +17,29 @@ and `--headless` modes exit cleanly.
 | `A` / `D` | Strafe left / right |
 | Left / Right arrow | Turn |
 | `Space` | Shoot |
+| `1` / `2` / `3` | Select pistol / shotgun / rifle (if owned) |
 | `R` | Restart (after death) |
 | `Esc` | Quit |
+
+On the title screen, Left / Right (or `A` / `D`) move the **difficulty slider**
+and any other key starts the game.
+
+## Difficulty
+
+Five skills: BABY, EASY, NORMAL, HARD, NIGHTMARE. They all drive one
+*pressure* value that scales enemy damage, HP, speed, attack rate and fireball
+speed, plus how much health and ammo pickups give back:
+
+| Skill | Level 1 | Level 9 | Shape |
+| --- | --- | --- | --- |
+| BABY | −0.6 | −0.6 | flat |
+| EASY | −0.3 | −0.3 | flat |
+| NORMAL | 0 | 0 | flat: the original hand-tuned game, unchanged |
+| HARD | +0.25 | +0.5 | climbs every level |
+| NIGHTMARE | +0.5 | +1.0 | climbs steeply. By level 9 enemies hit 2× as hard with 1.5× HP |
+
+The skill you pick carries over when you restart, and the game-over screen
+shows it. The numbers live in `src/difficulty.rs`.
 
 ## Features
 
@@ -92,6 +113,7 @@ Notes:
 | `--shot-level N` | Which level `--shot` renders (0-based). |
 | `--shot-pos X,Y` | Put the `--shot` camera at a map position instead of the spawn. |
 | `--shot-angle DEG` | Face the `--shot` camera in a given direction. |
+| `--skill S` | Preset the difficulty slider: `1`-`5` or a name (`hard`, `nightmare`, …). |
 
 ### Bot (AI player)
 

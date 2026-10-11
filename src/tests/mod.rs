@@ -15,6 +15,7 @@
 mod audio_tests;
 mod bot_tests;
 mod color_tests;
+mod difficulty_tests;
 mod entity_tests;
 mod game_tests;
 mod hud_tests;

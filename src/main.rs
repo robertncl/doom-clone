@@ -6,13 +6,15 @@
 //! Flags: `--headless` (no window, fixed timestep), `--frames N` (stop after N),
 //! `--bot` (AI plays), `--selftest` (validate levels and exit 0/1),
 //! `--shot PATH` (dump one frame as a PPM) with `--shot-level N`,
-//! `--shot-pos X,Y` and `--shot-angle DEG` to aim the camera.
+//! `--shot-pos X,Y` and `--shot-angle DEG` to aim the camera, `--skill N`
+//! (1-5 or BABY/EASY/NORMAL/HARD/NIGHTMARE) to preset the difficulty slider.
 #![allow(dead_code)]
 
 mod audio;
 mod bot;
 mod color;
 mod constants;
+mod difficulty;
 mod entity;
 mod game;
 mod hud;
@@ -59,6 +61,8 @@ struct Args {
     shot_level: usize,
     shot_pos: Option<(f64, f64)>,
     shot_angle: Option<f64>,
+    /// Starting skill (`SKILL_*`); `None` leaves the slider on NORMAL.
+    skill: Option<usize>,
 }
 
 impl Default for Args {
@@ -72,6 +76,7 @@ impl Default for Args {
             shot_level: 0,
             shot_pos: None,
             shot_angle: None,
+            skill: None,
         }
     }
 }
@@ -124,6 +129,11 @@ fn parse_args(argv: &[String]) -> Args {
                     a.shot_angle = v.parse::<f64>().ok().map(|d| d.to_radians());
                 }
             }
+            "--skill" => {
+                if let Some(v) = value(&mut i) {
+                    a.skill = difficulty::parse_skill(v);
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -147,6 +157,9 @@ fn shot_game(args: &Args) -> Game {
     }
     if let Some(a) = args.shot_angle {
         g.player.angle = a;
+    }
+    if let Some(s) = args.skill {
+        g.set_skill(s);
     }
     g.show_intro = false;
     g
@@ -176,6 +189,9 @@ fn run(args: &Args) -> i32 {
         g.audio.init();
     }
     g.reset_game();
+    if let Some(s) = args.skill {
+        g.set_skill(s);
+    }
 
     let frames = if args.headless {
         run_headless(&mut g, args.bot, args.max_frames)
@@ -184,7 +200,13 @@ fn run(args: &Args) -> i32 {
     };
 
     if args.bot {
-        println!("[bot] done: {} frames, level {}, final score {}", frames, g.level + 1, g.score);
+        println!(
+            "[bot] done: {} frames, level {}, final score {}, skill {}",
+            frames,
+            g.level + 1,
+            g.score,
+            difficulty::SKILL_NAMES[g.skill]
+        );
     }
     g.audio.shutdown();
     0
