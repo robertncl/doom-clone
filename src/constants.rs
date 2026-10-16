@@ -27,6 +27,8 @@ pub const MAX_PICKUPS: usize = 18;
 pub const MAX_BARRELS: usize = 12;
 pub const MAX_HIGHSCORES: usize = 5;
 pub const HIGHSCORE_FILE: &str = "doom_scores.dat";
+/// Most bytes `load_high_scores` will read from the table.
+pub const SCORE_FILE_MAX: u64 = 4096;
 
 // Input action indices (the old `K_*` enum). Used to index `keys`/`key_edge`.
 pub const K_FWD: usize = 0;

@@ -6,7 +6,7 @@ use crate::constants::*;
 use crate::difficulty::SKILL_NORMAL;
 use crate::textures::Textures;
 use crate::types::*;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 
 pub struct Game {
     pub keys: [bool; K_COUNT],
@@ -202,8 +202,15 @@ impl Game {
 
     pub fn load_high_scores(&mut self) {
         self.high_scores = [0; MAX_HIGHSCORES];
+        // Regular files only: opening a FIFO blocks forever, and a device such
+        // as /dev/zero never ends a line. The byte cap covers an oversized
+        // regular file — the real table is a few dozen bytes.
+        match std::fs::metadata(&self.score_file) {
+            Ok(m) if m.is_file() => {}
+            _ => return,
+        }
         if let Ok(f) = std::fs::File::open(&self.score_file) {
-            let reader = std::io::BufReader::new(f);
+            let reader = std::io::BufReader::new(f.take(SCORE_FILE_MAX));
             for (i, line) in reader.lines().enumerate() {
                 if i >= MAX_HIGHSCORES {
                     break;
@@ -219,11 +226,30 @@ impl Game {
         }
     }
 
+    /// Write the table to a fresh temp file beside the real one, then rename it
+    /// into place. `File::create` on the real path would follow a symlink
+    /// planted there and truncate whatever it points at (the file sits in the
+    /// working directory, which may not be the player's own). `create_new`
+    /// refuses any existing path, symlinks included, and `rename` replaces the
+    /// link itself rather than its target. A crash mid-write also can no longer
+    /// leave a half-written table behind.
     pub fn save_high_scores(&self) {
-        if let Ok(mut f) = std::fs::File::create(&self.score_file) {
-            for s in &self.high_scores {
-                let _ = writeln!(f, "{}", s);
-            }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let tmp = format!("{}.{}.{}.tmp", self.score_file, std::process::id(), nanos);
+        let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) else {
+            return; // couldn't get a fresh file: skip the save, clobber nothing
+        };
+        let mut body = String::new();
+        for s in &self.high_scores {
+            body.push_str(&format!("{}\n", s));
+        }
+        let wrote = f.write_all(body.as_bytes()).and_then(|_| f.sync_all());
+        drop(f); // close before the rename (Windows won't move an open file)
+        if wrote.is_err() || std::fs::rename(&tmp, &self.score_file).is_err() {
+            let _ = std::fs::remove_file(&tmp);
         }
     }
 

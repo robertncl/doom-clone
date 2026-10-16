@@ -273,3 +273,69 @@ fn submitting_writes_the_table_out() {
     assert!(body.starts_with("777"), "the new score should be on disk: {body:?}");
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn saving_leaves_no_temp_file_behind() {
+    let (mut g, path) = game_with_scratch_scores("no-temp");
+    g.high_scores = [3, 2, 1, 0, 0];
+    g.save_high_scores();
+    let dir = path.parent().unwrap();
+    let stem = path.file_name().unwrap().to_string_lossy().into_owned();
+    let leftovers: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(&stem) && n.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "stray temp files: {leftovers:?}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "3\n2\n1\n0\n0\n");
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(unix)]
+#[test]
+fn saving_replaces_a_planted_symlink_instead_of_writing_through_it() {
+    let (mut g, path) = game_with_scratch_scores("symlink");
+    let victim = scratch_path("symlink-victim");
+    std::fs::write(&victim, "precious\n").unwrap();
+    std::os::unix::fs::symlink(&victim, &path).unwrap();
+
+    g.high_scores = [999, 0, 0, 0, 0];
+    g.save_high_scores();
+
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious\n", "target untouched");
+    let meta = std::fs::symlink_metadata(&path).unwrap();
+    assert!(meta.file_type().is_file(), "the link is replaced by a real file");
+    assert!(std::fs::read_to_string(&path).unwrap().starts_with("999\n"));
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(victim);
+}
+
+#[test]
+fn an_oversized_score_file_is_read_only_up_to_the_cap() {
+    let (mut g, path) = game_with_scratch_scores("huge");
+    // One endless line: without the cap the whole thing is buffered looking
+    // for a newline. With it, the line is cut short and fails to parse.
+    std::fs::write(&path, "9".repeat(SCORE_FILE_MAX as usize * 64)).unwrap();
+    g.load_high_scores();
+    assert_eq!(g.high_scores, [0; MAX_HIGHSCORES]);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn a_score_path_that_is_not_a_regular_file_is_ignored() {
+    let (mut g, path) = game_with_scratch_scores("is-a-dir");
+    std::fs::create_dir_all(&path).unwrap();
+    g.high_scores = [5; MAX_HIGHSCORES];
+    g.load_high_scores();
+    assert_eq!(g.high_scores, [0; MAX_HIGHSCORES]);
+    let _ = std::fs::remove_dir(&path);
+
+    // A device that never ends a line must not hang the load.
+    #[cfg(unix)]
+    {
+        g.score_file = "/dev/zero".to_string();
+        g.load_high_scores();
+        assert_eq!(g.high_scores, [0; MAX_HIGHSCORES]);
+    }
+}
