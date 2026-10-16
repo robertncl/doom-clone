@@ -43,7 +43,13 @@ shows it. The numbers live in `src/difficulty.rs`.
 
 ## Features
 
-- DDA raycasting with distance shading and bilinear-filtered procedural textures
+- DDA raycasting with bilinear-filtered procedural textures, coloured fog,
+  and a per-level lightmap (soft shadows in corners, flickering torches,
+  glowing lava, and light from muzzle flashes, fireballs and explosions)
+- Every level has its own look: dusk, night and hell skies outdoors; grated,
+  cobbled, rocky or plated floors; wall torches, lamps, screens, banners and
+  wear; and standing props such as braziers, lamp posts, pillars, skulls and
+  dead trees (see [Graphics and levels](#graphics-and-levels))
 - Smooth, velocity-based player movement with acceleration and friction
 - Nine levels that escalate: plain corridors early, then lava, barrels and
   heavier demons in the back half
@@ -58,6 +64,31 @@ shows it. The numbers live in `src/difficulty.rs`.
 - Built-in AI bot (`--bot`) that pathfinds, fights, grabs guns, and routes
   around lava
 - Self-test mode (`--selftest`) that validates level geometry and reachability
+
+## Graphics and levels
+
+Each level gets a theme (`src/theme.rs`): floor and ceiling textures or an
+open sky, fog colour and thickness, ambient light, how often wall faces carry
+a light fixture, a decoration or wear, and which props stand around. A theme
+only changes how a level looks. Geometry, spawns and every rule come from the
+map, so the bot's results don't change.
+
+| Level | Theme | Sky / ceiling | Light |
+| --- | --- | --- | --- |
+| 1 | Outpost | dusk sky over hills | torches, warm haze |
+| 2 | Base | strip-lit panels | caged lamps, cold blue |
+| 3 | Catacombs | stone vault | torches only, very dark |
+| 4 | Hell court | blood-red sky | braziers, glowing cracks |
+| 5 | Night ruins | stars and moon | torches against blue night |
+| 6 | Bastion | pipes and girders | lamps, hazard markings |
+| 7 | Gauntlet | ember-smoke sky | lava glow, braziers |
+| 8 | Foundry | pipes and girders | coolant screens, lava glow |
+| 9 | Inferno | blood-red sky | lava and fire |
+
+Which cells get a floor patch, which wall faces get a fixture, and where props
+stand is rolled from a hash of the level and position, so a level looks the
+same every time. `src/lighting.rs` bakes the lightmap when a level loads, with
+walls blocking light, then mixes in flicker and moving lights each frame.
 
 ## Screenshots
 
@@ -114,6 +145,7 @@ Notes:
 | `--shot-pos X,Y` | Put the `--shot` camera at a map position instead of the spawn. |
 | `--shot-angle DEG` | Face the `--shot` camera in a given direction. |
 | `--skill S` | Preset the difficulty slider: `1`-`5` or a name (`hard`, `nightmare`, …). |
+| `--bench` | Render fixed views of every level plus close-range enemies and print median frame times per stage (`--frames N` sets the repetitions). |
 
 ### Bot (AI player)
 
@@ -178,6 +210,11 @@ backend here — audio silently disables. Headless runs skip audio entirely.
   translated into a small set of game-defined actions.
 - All shared game state lives in one `Game` struct rather than scattered
   globals.
+- Rendering order: wall columns first (one DDA ray each), then the floor and
+  ceiling or sky a row at a time, skipping pixels a wall already covers. The
+  floor loop runs in fixed point and samples the lightmap every 16 pixels.
+- Sprites are procedural functions, pre-rendered once into cached, mipmapped
+  rasters (`sprites::bank`). Textures are built once per process and shared.
 - Frame delta is clamped for stability so the simulation stays sane across
   hitches.
 

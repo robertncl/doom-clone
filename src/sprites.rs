@@ -1,12 +1,22 @@
-//! Procedural enemy/pickup/fireball/particle sprites, depth-sorted and drawn
-//! against the wall depth buffer. `grunt_pixel`/`imp_pixel` return `Some(color)`
-//! for a drawn texel or `None` for transparent (the C `int`/`*out` pattern).
+//! Sprites: enemies, pickups, barrels, decorations, fireballs and particles,
+//! depth-sorted and drawn against the wall depth buffer.
+//!
+//! Each sprite is described by a procedural `*_pixel(u, v)` function that
+//! returns `Some(color)` for a drawn texel or `None` for transparent. Those
+//! functions are far too slow to run per screen pixel (a baron filling the
+//! view cost ~10 ms a frame), so every sprite and animation frame is rendered
+//! once into a cached, mipmapped raster (see [`bank`]), and drawing is a
+//! bilinear lookup plus lighting from the level's lightmap.
 
-use crate::color::{make_color, shade_color};
+use crate::color::{blend4, make_color, shade_color, Lit, FP_BITS, FP_ONE};
 use crate::constants::*;
 use crate::game::Game;
+use crate::lighting::{Decor, MAX_DECOR};
+use crate::theme::*;
 use crate::types::{Barrel, Enemy, Fireball, Pickup};
+use std::sync::OnceLock;
 
+/// Grunt: a helmeted soldier with a rifle held across the body.
 fn grunt_pixel(u: f64, v: f64, anim: f64) -> Option<u32> {
     let cx0 = u - 0.5;
     let cy = v - 0.5;
@@ -340,10 +350,10 @@ fn imp_pixel(u: f64, v: f64, anim: f64) -> Option<u32> {
 /// claw hands held out front. Drawn translucent by the caller.
 fn wraith_pixel(u: f64, v: f64, anim: f64) -> Option<u32> {
     let cx0 = u - 0.5;
-    let hover = (anim * 1.6).sin() * 0.035;
+    let hover = (anim * 1.5).sin() * 0.035;
     let cy = v - 0.46 - hover;
     // The whole shape drifts sideways a little, like it's swimming.
-    let cx = cx0 - (anim * 1.1).sin() * 0.02;
+    let cx = cx0 - anim.sin() * 0.02;
 
     // --- Face details (foreground) ---
     // Eye glow, brighter core inside a wider halo.
@@ -372,7 +382,7 @@ fn wraith_pixel(u: f64, v: f64, anim: f64) -> Option<u32> {
 
     // Claws: three thin talons per hand, swinging with the drift.
     {
-        let swing = (anim * 1.6).cos() * 0.04;
+        let swing = (anim * 1.5).cos() * 0.04;
         let hy = 0.06 + swing;
         if cy > hy && cy < hy + 0.10 {
             let mut side = -1;
@@ -710,217 +720,675 @@ fn weapon_pixel(u: f64, v: f64, kind: i32) -> Option<u32> {
     None
 }
 
-impl Game {
-    /// Composite a billboard sprite onto the framebuffer. Samples `sample(u,v)`
-    /// (u,v in 0..1) with 2x2 supersampling for anti-aliased edges, darkens
-    /// partial-coverage texels into a subtle outline, applies distance `shade`
-    /// (or a white hit `flash`), and alpha-blends over the existing pixel by
-    /// sub-pixel coverage scaled by `alpha` (1.0 = opaque; the wraith is drawn
-    /// see-through). Very large/near sprites fall back to a single sample
-    /// (their edges are already many pixels thick, so AA buys little and the
-    /// supersample would cost the most there). Columns nearer in the wall `depth`
-    /// buffer occlude the sprite.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_sprite<F: Fn(f64, f64) -> Option<u32>>(
-        &mut self,
-        dsx: i32,
-        dsy: i32,
-        w: i32,
-        h: i32,
-        tx: f64,
-        shade: f64,
-        flash: bool,
-        alpha: f64,
-        sample: F,
-    ) {
-        let sx0 = dsx.max(0);
-        let sx1 = (dsx + w).min(SCREEN_W as i32);
-        let sy0 = dsy.max(0);
-        let sy1 = (dsy + h).min(SCREEN_H as i32);
-        let (inv_w, inv_h) = (1.0 / w as f64, 1.0 / h as f64);
-        let offs: &[f64] = if h <= 240 { &[0.25, 0.75] } else { &[0.5] };
-        let nn = (offs.len() * offs.len()) as i32;
+// ---- decorations ----
 
-        for x in sx0..sx1 {
-            if tx >= self.depth[x as usize] {
-                continue;
-            }
-            let xb = (x - dsx) as f64;
-            for y in sy0..sy1 {
-                let yb = (y - dsy) as f64;
-                let (mut rs, mut gs, mut bs, mut cnt) = (0i32, 0i32, 0i32, 0i32);
-                for &oy in offs {
-                    let v = (yb + oy) * inv_h;
-                    for &ox in offs {
-                        let u = (xb + ox) * inv_w;
-                        if let Some(c) = sample(u, v) {
-                            rs += ((c >> 16) & 0xFF) as i32;
-                            gs += ((c >> 8) & 0xFF) as i32;
-                            bs += (c & 0xFF) as i32;
-                            cnt += 1;
-                        }
-                    }
-                }
-                if cnt == 0 {
-                    continue;
-                }
-                let cov = cnt as f64 / nn as f64 * alpha;
-                let (sr, sg, sb) = if flash {
-                    (255.0, 240.0, 240.0)
-                } else {
-                    let m = shade * (0.6 + 0.4 * cov); // rim-darken thin edges
-                    ((rs / cnt) as f64 * m, (gs / cnt) as f64 * m, (bs / cnt) as f64 * m)
-                };
-                let idx = y as usize * SCREEN_W + x as usize;
-                let dst = self.pixels[idx];
-                let dr = ((dst >> 16) & 0xFF) as f64;
-                let dg = ((dst >> 8) & 0xFF) as f64;
-                let db = (dst & 0xFF) as f64;
-                self.pixels[idx] = make_color(
-                    (dr + (sr - dr) * cov) as i32,
-                    (dg + (sg - dg) * cov) as i32,
-                    (db + (sb - db) * cov) as i32,
-                );
+/// Flame colour by heat: 0 is the red fringe, 1 the white-hot core.
+fn flame_rgb(heat: f64) -> u32 {
+    let h = heat.clamp(0.0, 1.0);
+    let (r, g, b) = if h > 0.62 {
+        let t = (h - 0.62) / 0.38;
+        (255.0, 200.0 + 50.0 * t, 80.0 + 135.0 * t)
+    } else if h > 0.3 {
+        let t = (h - 0.3) / 0.32;
+        (250.0 + 5.0 * t, 110.0 + 90.0 * t, 30.0 + 50.0 * t)
+    } else {
+        let t = h / 0.3;
+        (170.0 + 80.0 * t, 40.0 + 70.0 * t, 15.0 + 15.0 * t)
+    };
+    make_color(r as i32, g as i32, b as i32)
+}
+
+/// One tongue of flame: a teardrop from `top` (its tip) down to `bot` around
+/// `cx`, at most `w` half-width, swaying with `anim`.
+fn flame_tongue(u: f64, v: f64, cx: f64, top: f64, bot: f64, w: f64, anim: f64) -> Option<u32> {
+    if v < top || v > bot {
+        return None;
+    }
+    let t = (v - top) / (bot - top); // 0 tip .. 1 base
+    let sway = (anim + v * 11.0).sin() * 0.018 * (1.0 - t);
+    let half = w * t.powf(0.6) * (1.0 - t * t * 0.5);
+    let off = (u - cx - sway).abs();
+    if off >= half {
+        return None;
+    }
+    Some(flame_rgb((1.0 - off / half) * (0.35 + 0.65 * t)))
+}
+
+/// Iron, cylinder-shaded across `t` in -1..1 (lit from the left).
+fn iron(t: f64, r: f64, g: f64, b: f64) -> u32 {
+    let m = (1.0 - (t + 0.3).abs().min(1.0) * 0.5).max(0.3);
+    make_color((r * m) as i32, (g * m) as i32, (b * m) as i32)
+}
+
+/// A standing torch: a flaming cup on an iron pole with tripod feet.
+fn torch_pixel(u: f64, v: f64, anim: f64) -> Option<u32> {
+    let cx = u - 0.5;
+    let top = 0.08 + 0.025 * (anim * 2.0).sin();
+    if let Some(c) = flame_tongue(u, v, 0.5, top, 0.34, 0.085, anim) {
+        return Some(c);
+    }
+    if (0.33..0.40).contains(&v) {
+        let half = 0.11 - (v - 0.33) * 0.7;
+        if cx.abs() < half {
+            return Some(if v < 0.345 { make_color(232, 112, 40) } else { iron(cx / half, 80.0, 70.0, 62.0) });
+        }
+    }
+    if (0.40..0.92).contains(&v) {
+        let collar = (v - 0.52).abs() < 0.012 || (v - 0.76).abs() < 0.012;
+        let half = if collar { 0.034 } else { 0.022 };
+        if cx.abs() < half {
+            return Some(iron(cx / half, 70.0, 63.0, 58.0));
+        }
+    }
+    if (0.88..0.985).contains(&v) {
+        let spread = (v - 0.88) * 1.6;
+        for leg in [-1.0, 0.0, 1.0] {
+            if (cx - leg * spread).abs() < 0.016 {
+                return Some(make_color(52, 46, 42));
             }
         }
     }
+    None
+}
 
-    fn draw_enemy(&mut self, e: Enemy) {
-        let (px, py, ang) = (self.player.x, self.player.y, self.player.angle);
-        let dx = e.x - px;
-        let dy = e.y - py;
-        let cs = (-ang).cos();
-        let sn = (-ang).sin();
-        let tx = dx * cs - dy * sn;
-        let ty = dx * sn + dy * cs;
-        if tx <= 0.1 {
-            return;
+/// A tech lamp post: caged white lamp on a striped post.
+fn lamp_pixel(u: f64, v: f64) -> Option<u32> {
+    let cx = u - 0.5;
+    if (0.08..0.25).contains(&v) && cx.abs() < 0.10 {
+        if cx.abs() < 0.075 && (0.105..0.225).contains(&v) {
+            let bar = ((cx + 0.075) / 0.03).fract() < 0.22;
+            return Some(if bar { make_color(120, 140, 160) } else { make_color(236, 244, 255) });
         }
+        return Some(if v < 0.095 { make_color(150, 156, 166) } else { make_color(40, 44, 52) });
+    }
+    if (0.25..0.92).contains(&v) {
+        let half = if v < 0.30 { 0.028 } else { 0.036 };
+        if cx.abs() < half {
+            if (0.80..0.86).contains(&v) {
+                let stripe = (((v - cx) / 0.02).floor() as i32) & 1 == 0;
+                return Some(if stripe { make_color(214, 176, 36) } else { make_color(26, 24, 22) });
+            }
+            return Some(iron(cx / half, 104.0, 110.0, 120.0));
+        }
+    }
+    if (0.92..0.98).contains(&v) && cx.abs() < 0.12 {
+        return Some(if v < 0.93 { make_color(124, 128, 136) } else { make_color(58, 62, 70) });
+    }
+    None
+}
 
-        let plane_half = (FOV / 2.0).tan();
-        let screen_x = (SCREEN_W as f64 / 2.0) * (1.0 + ty / (tx * plane_half));
-        // Kinds differ in bulk, but they all stand on the same floor: scale the
-        // billboard about its feet so a baron towers instead of sinking.
-        let base_h = (SCREEN_H as f64 / tx) as i32;
-        let sprite_h = (base_h as f64 * EN_SCALE[e.kind as usize]) as i32;
-        let sprite_w = sprite_h;
-        let feet = SCREEN_H as i32 / 2 + base_h / 2;
-        let dsx = (screen_x - sprite_w as f64 / 2.0) as i32;
-        let dsy = feet - sprite_h;
+/// A heap of skulls and bones at the foot of the wall.
+fn skulls_pixel(u: f64, v: f64) -> Option<u32> {
+    // Front-most first: the first shape that covers a texel wins.
+    for &(sx, sy, r) in &[(0.63, 0.885, 0.078), (0.36, 0.875, 0.08), (0.5, 0.80, 0.075)] {
+        let (x, y) = ((u - sx) / r, (v - sy) / r);
+        let cranium = x * x + y * y < 1.0 && y < 0.5;
+        let jaw = x.abs() < 0.55 && (0.45..1.15).contains(&y);
+        if !(cranium || jaw) {
+            continue;
+        }
+        let eye = (x - 0.36).powi(2) + (y - 0.12).powi(2) < 0.075 || (x + 0.36).powi(2) + (y - 0.12).powi(2) < 0.075;
+        let nose = x.abs() < 0.1 && (0.35..0.6).contains(&y);
+        if eye || nose {
+            return Some(make_color(24, 14, 10));
+        }
+        if jaw && y > 0.8 && ((x * 7.0).floor() as i32) & 1 == 0 {
+            return Some(make_color(150, 138, 112)); // teeth
+        }
+        let m = (0.85 - x * 0.18 - y * 0.25).clamp(0.45, 1.05);
+        return Some(make_color((206.0 * m) as i32, (194.0 * m) as i32, (162.0 * m) as i32));
+    }
+    for &(x0, y0, x1, y1) in &[(0.22, 0.955, 0.52, 0.935), (0.46, 0.975, 0.80, 0.945)] {
+        let (vx, vy) = (x1 - x0, y1 - y0);
+        let t = (((u - x0) * vx + (v - y0) * vy) / (vx * vx + vy * vy)).clamp(0.0, 1.0);
+        let d = (x0 + vx * t - u).hypot(y0 + vy * t - v);
+        if d < if !(0.06..=0.94).contains(&t) { 0.02 } else { 0.012 } {
+            return Some(make_color(196, 184, 152));
+        }
+    }
+    None
+}
 
-        let shade = (1.0 - tx / MAX_DEPTH).max(0.25);
-        let flash = e.hit_flash > 0.0;
-        let alpha = if e.kind == EN_WRAITH { 0.72 } else { 1.0 };
-        let (anim, kind) = (e.anim, e.kind);
-        self.draw_sprite(dsx, dsy, sprite_w, sprite_h, tx, shade, flash, alpha, move |u, v| {
+/// Distance from `(u, v)` to a segment, and how far along it (0..1).
+fn seg(u: f64, v: f64, x0: f64, y0: f64, x1: f64, y1: f64) -> (f64, f64, f64) {
+    let (vx, vy) = (x1 - x0, y1 - y0);
+    let t = (((u - x0) * vx + (v - y0) * vy) / (vx * vx + vy * vy)).clamp(0.0, 1.0);
+    let (dx, dy) = (u - (x0 + vx * t), v - (y0 + vy * t));
+    // Signed side, so the left edge of each limb can catch the light.
+    let side = vx * dy - vy * dx;
+    ((dx * dx + dy * dy).sqrt(), t, side)
+}
+
+/// A dead tree: a gnarled trunk with bare, forking branches.
+fn tree_pixel(u: f64, v: f64) -> Option<u32> {
+    // (x0, y0, x1, y1, radius at start, radius at end)
+    const LIMBS: [(f64, f64, f64, f64, f64, f64); 10] = [
+        (0.50, 1.00, 0.47, 0.62, 0.050, 0.032),
+        (0.47, 0.62, 0.53, 0.28, 0.032, 0.016),
+        (0.53, 0.28, 0.50, 0.08, 0.016, 0.005),
+        (0.47, 0.64, 0.27, 0.42, 0.020, 0.007),
+        (0.27, 0.42, 0.17, 0.27, 0.007, 0.003),
+        (0.27, 0.42, 0.33, 0.30, 0.006, 0.003),
+        (0.50, 0.48, 0.73, 0.32, 0.017, 0.006),
+        (0.73, 0.32, 0.82, 0.16, 0.006, 0.003),
+        (0.52, 0.34, 0.36, 0.17, 0.010, 0.004),
+        (0.53, 0.30, 0.66, 0.14, 0.009, 0.003),
+    ];
+    // Root flare.
+    if v > 0.94 {
+        let half = 0.05 + (v - 0.94) * 1.6;
+        if (u - 0.5).abs() < half {
+            return Some(make_color(56, 46, 38));
+        }
+    }
+    for &(x0, y0, x1, y1, r0, r1) in &LIMBS {
+        let (d, t, side) = seg(u, v, x0, y0, x1, y1);
+        let r = r0 + (r1 - r0) * t;
+        if d < r {
+            let lit = side < 0.0 && d > r * 0.35;
+            return Some(if lit { make_color(96, 80, 66) } else { make_color(58, 47, 40) });
+        }
+    }
+    None
+}
+
+/// Two chains hanging from the ceiling, one ending in a meat hook.
+fn chains_pixel(u: f64, v: f64) -> Option<u32> {
+    for &(cx, len) in &[(0.42, 0.52), (0.58, 0.66)] {
+        if v > len {
+            continue;
+        }
+        let dx = u - cx;
+        let link = (v / 0.04) as i32;
+        let lv = (v % 0.04) / 0.04;
+        if link & 1 == 0 {
+            let (ex, ey) = (dx / 0.016, (lv - 0.5) / 0.5);
+            let d = ex * ex + ey * ey;
+            if d < 1.0 && d > 0.35 {
+                return Some(iron(ex, 120.0, 116.0, 112.0));
+            }
+        } else if dx.abs() < 0.006 {
+            return Some(make_color(70, 66, 62));
+        }
+    }
+    // The hook: a shank, then a J curling back up.
+    if (0.66..0.71).contains(&v) && (u - 0.58).abs() < 0.007 {
+        return Some(make_color(130, 124, 118));
+    }
+    let (hx, hy) = (u - 0.556, v - 0.71);
+    let r = hx.hypot(hy);
+    if hy >= 0.0 && (r - 0.024).abs() < 0.007 {
+        return Some(make_color(130, 124, 118));
+    }
+    None
+}
+
+/// A fire bowl on a pedestal, burning with three tongues of flame.
+fn brazier_pixel(u: f64, v: f64, anim: f64) -> Option<u32> {
+    let cx = u - 0.5;
+    let tongues = [
+        (0.43, 0.30 + 0.04 * (anim * 1.7).sin(), 0.06),
+        (0.50, 0.18 + 0.04 * (anim * 1.3 + 1.0).sin(), 0.085),
+        (0.57, 0.28 + 0.04 * (anim * 2.1 + 2.0).sin(), 0.06),
+    ];
+    for &(x, top, w) in &tongues {
+        if let Some(c) = flame_tongue(u, v, x, top, 0.6, w, anim + x * 10.0) {
+            return Some(c);
+        }
+    }
+    if (0.57..0.61).contains(&v) && cx.abs() < 0.17 {
+        let hot = ((u * 61.0).sin() * (v * 97.0).cos()) > 0.2;
+        return Some(if hot { make_color(255, 150, 50) } else { make_color(150, 40, 16) });
+    }
+    if (0.60..0.71).contains(&v) {
+        let half = 0.2 - (v - 0.6) * 0.9;
+        if cx.abs() < half {
+            let rim = v < 0.62;
+            return Some(if rim { make_color(150, 120, 100) } else { iron(cx / half, 92.0, 80.0, 72.0) });
+        }
+    }
+    if (0.71..0.93).contains(&v) && cx.abs() < 0.055 {
+        return Some(iron(cx / 0.055, 110.0, 104.0, 96.0));
+    }
+    if (0.93..0.99).contains(&v) && cx.abs() < 0.13 {
+        return Some(iron(cx / 0.13, 120.0, 114.0, 106.0));
+    }
+    None
+}
+
+/// A fluted stone column with a capital and a base.
+fn pillar_pixel(u: f64, v: f64) -> Option<u32> {
+    let cx = u - 0.5;
+    let stone = |m: f64| make_color((150.0 * m) as i32, (144.0 * m) as i32, (132.0 * m) as i32);
+    if v < 0.07 && cx.abs() < 0.19 {
+        return Some(stone(if v < 0.02 { 1.1 } else { 0.85 }));
+    }
+    if (0.07..0.11).contains(&v) && cx.abs() < 0.16 {
+        return Some(stone(0.95));
+    }
+    if (0.93..1.0).contains(&v) && cx.abs() < 0.2 {
+        return Some(stone(if v < 0.945 { 1.05 } else { 0.8 }));
+    }
+    if (0.89..0.93).contains(&v) && cx.abs() < 0.16 {
+        return Some(stone(0.95));
+    }
+    if (0.11..0.89).contains(&v) && cx.abs() < 0.13 {
+        let t = cx / 0.13;
+        let round = 1.0 - (t + 0.35).abs().powi(2) * 0.5;
+        let flute = ((t * 4.0 * std::f64::consts::PI).cos() * 0.5 + 0.5) * 0.18;
+        let chip = ((u * 53.0).sin() * (v * 41.0).sin()) > 0.93;
+        return Some(stone((round - flute - if chip { 0.25 } else { 0.0 }).max(0.3)));
+    }
+    None
+}
+
+// ---- the sprite bank: every sprite pre-rendered once ----
+
+/// Raster size of a cached sprite.
+pub const SPR: usize = 128;
+/// Mip levels: 128, 64, 32 and 16 texels.
+const MIPS: usize = 4;
+/// Supersamples per texel axis when rasterising (3x3 per texel).
+const SS: usize = 3;
+/// Animation frames for flame decorations, over one 2π cycle.
+const FLAME_FRAMES: usize = 8;
+
+/// `(period, frames)` of each enemy kind's animation, indexed by `EN_*`. The
+/// period is the shortest span after which every sine in the kind's sprite
+/// function repeats, so the frames loop without a jump.
+pub(crate) const ENEMY_ANIM: [(f64, usize); EN_KIND_MAX] = [
+    (std::f64::consts::TAU, 24),
+    (std::f64::consts::PI, 12),
+    (2.0 * std::f64::consts::TAU, 32),
+    (2.0 * std::f64::consts::TAU / 3.0, 16),
+];
+
+/// A pre-rendered sprite: premultiplied `0xAARRGGBB` (alpha = coverage), plus
+/// box-filtered mips so distant sprites stay stable instead of shimmering.
+pub struct Raster {
+    pub(crate) levels: Vec<Vec<u32>>,
+}
+
+/// Which cached frame shows at animation phase `anim`.
+pub(crate) fn anim_frame(period: f64, frames: usize, anim: f64) -> usize {
+    (((anim / period).rem_euclid(1.0) * frames as f64) as usize).min(frames - 1)
+}
+
+pub(crate) fn decor_frames(kind: usize) -> usize {
+    if kind == DEC_TORCH || kind == DEC_BRAZIER { FLAME_FRAMES } else { 1 }
+}
+
+#[derive(Clone, Copy)]
+enum Job {
+    Enemy(i32, usize),
+    Pickup(i32),
+    Barrel,
+    Decor(usize, usize),
+}
+
+fn sample_job(job: Job, u: f64, v: f64) -> Option<u32> {
+    match job {
+        Job::Enemy(kind, frame) => {
+            let (period, frames) = ENEMY_ANIM[kind as usize];
+            let anim = (frame as f64 + 0.5) / frames as f64 * period;
             match kind {
                 EN_IMP => imp_pixel(u, v, anim),
                 EN_WRAITH => wraith_pixel(u, v, anim),
                 EN_BARON => baron_pixel(u, v, anim),
                 _ => grunt_pixel(u, v, anim),
             }
+        }
+        Job::Pickup(kind) => match kind {
+            PU_HEALTH => health_pixel(u, v, 0.0),
+            PU_AMMO => ammo_pixel(u, v, 0.0),
+            _ => weapon_pixel(u, v, kind),
+        },
+        Job::Barrel => barrel_pixel(u, v),
+        Job::Decor(kind, frame) => {
+            let anim = (frame as f64 + 0.5) / decor_frames(kind) as f64 * std::f64::consts::TAU;
+            match kind {
+                DEC_TORCH => torch_pixel(u, v, anim),
+                DEC_LAMP => lamp_pixel(u, v),
+                DEC_SKULLS => skulls_pixel(u, v),
+                DEC_TREE => tree_pixel(u, v),
+                DEC_CHAINS => chains_pixel(u, v),
+                DEC_BRAZIER => brazier_pixel(u, v, anim),
+                _ => pillar_pixel(u, v),
+            }
+        }
+    }
+}
+
+/// Render a sprite function into a raster: supersample each texel, darken
+/// thinly-covered edge texels into a subtle outline (as the old per-pixel
+/// path did on screen), premultiply by coverage, then build the mips.
+fn rasterize(job: Job) -> Raster {
+    let mut base = vec![0u32; SPR * SPR];
+    let n = (SS * SS) as f64;
+    for ty in 0..SPR {
+        for tx in 0..SPR {
+            let (mut r, mut g, mut b, mut cnt) = (0.0, 0.0, 0.0, 0.0);
+            for sy in 0..SS {
+                let v = (ty as f64 + (sy as f64 + 0.5) / SS as f64) / SPR as f64;
+                for sx in 0..SS {
+                    let u = (tx as f64 + (sx as f64 + 0.5) / SS as f64) / SPR as f64;
+                    if let Some(c) = sample_job(job, u, v) {
+                        r += ((c >> 16) & 0xFF) as f64;
+                        g += ((c >> 8) & 0xFF) as f64;
+                        b += (c & 0xFF) as f64;
+                        cnt += 1.0;
+                    }
+                }
+            }
+            if cnt == 0.0 {
+                continue;
+            }
+            let cov = cnt / n;
+            let k = (0.6 + 0.4 * cov) * cov / cnt;
+            let a = (cov * 255.0).round() as u32;
+            base[ty * SPR + tx] = (a << 24) | make_color((r * k) as i32, (g * k) as i32, (b * k) as i32);
+        }
+    }
+    let mut levels = vec![base];
+    for l in 1..MIPS {
+        let (src, ss) = (&levels[l - 1], SPR >> (l - 1));
+        let ds = ss / 2;
+        let mut out = vec![0u32; ds * ds];
+        for y in 0..ds {
+            for x in 0..ds {
+                let px = [src[2 * y * ss + 2 * x], src[2 * y * ss + 2 * x + 1], src[(2 * y + 1) * ss + 2 * x], src[(2 * y + 1) * ss + 2 * x + 1]];
+                let avg = |s: u32| (px.iter().map(|p| (p >> s) & 0xFF).sum::<u32>() + 2) / 4;
+                out[y * ds + x] = (avg(24) << 24) | (avg(16) << 16) | (avg(8) << 8) | avg(0);
+            }
+        }
+        levels.push(out);
+    }
+    Raster { levels }
+}
+
+pub(crate) struct SpriteBank {
+    pub(crate) enemies: Vec<Vec<Raster>>,
+    pub(crate) pickups: Vec<Raster>,
+    pub(crate) barrel: Raster,
+    pub(crate) decor: Vec<Vec<Raster>>,
+}
+
+/// The process-wide sprite cache, rasterised on first use across all cores
+/// (~100 rasters; a fraction of a second, once).
+pub(crate) fn bank() -> &'static SpriteBank {
+    static BANK: OnceLock<SpriteBank> = OnceLock::new();
+    BANK.get_or_init(|| {
+        let mut jobs = Vec::new();
+        for kind in 0..EN_KIND_MAX as i32 {
+            for f in 0..ENEMY_ANIM[kind as usize].1 {
+                jobs.push(Job::Enemy(kind, f));
+            }
+        }
+        for kind in [PU_HEALTH, PU_AMMO, PU_SHOTGUN, PU_RIFLE] {
+            jobs.push(Job::Pickup(kind));
+        }
+        jobs.push(Job::Barrel);
+        for kind in 0..DEC_KIND_MAX {
+            for f in 0..decor_frames(kind) {
+                jobs.push(Job::Decor(kind, f));
+            }
+        }
+
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+        let jobs_ref = &jobs;
+        let done: Vec<Option<Raster>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..threads)
+                .map(|t| {
+                    s.spawn(move || {
+                        jobs_ref
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| i % threads == t)
+                            .map(|(i, &j)| (i, rasterize(j)))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            let mut out: Vec<Option<Raster>> = (0..jobs_ref.len()).map(|_| None).collect();
+            for h in handles {
+                for (i, r) in h.join().expect("sprite rasteriser thread panicked") {
+                    out[i] = Some(r);
+                }
+            }
+            out
         });
+        // Results come back in job order, which is the bank's layout.
+        let mut it = done.into_iter().map(|r| r.expect("every sprite job ran"));
+        let mut next = || it.next().expect("job count matches the bank layout");
+        let enemies = (0..EN_KIND_MAX).map(|k| (0..ENEMY_ANIM[k].1).map(|_| next()).collect()).collect();
+        let pickups = (0..4).map(|_| next()).collect();
+        let barrel = next();
+        let decor = (0..DEC_KIND_MAX).map(|k| (0..decor_frames(k)).map(|_| next()).collect()).collect();
+        SpriteBank { enemies, pickups, barrel, decor }
+    })
+}
+
+/// Sprites never get darker than this, so an enemy in a black corner is still
+/// a silhouette you can shoot.
+const MIN_SPRITE_LIGHT: i32 = 96;
+
+impl Game {
+    /// Camera-space projection of a world point: `(screen_x, depth, base_h)`,
+    /// where `base_h` is the height of a full wall at that depth. `None` when
+    /// the point is behind (or practically at) the camera.
+    pub(crate) fn project(&self, x: f64, y: f64) -> Option<(f64, f64, i32)> {
+        let (px, py, ang) = (self.player.x, self.player.y, self.player.angle);
+        let (dx, dy) = (x - px, y - py);
+        let (cs, sn) = ((-ang).cos(), (-ang).sin());
+        let tx = dx * cs - dy * sn;
+        let ty = dx * sn + dy * cs;
+        if tx <= 0.1 {
+            return None;
+        }
+        let plane_half = (FOV / 2.0).tan();
+        let screen_x = (SCREEN_W as f64 / 2.0) * (1.0 + ty / (tx * plane_half));
+        Some((screen_x, tx, (SCREEN_H as f64 / tx) as i32))
+    }
+
+    /// Lighting for a sprite standing at `(x, y)`, `depth` from the camera.
+    fn sprite_lit(&self, x: f64, y: f64, depth: f64) -> Lit {
+        let light = self.env.light_at(x, y).map(|c| c.max(MIN_SPRITE_LIGHT));
+        self.lit_for(light, self.fog_visibility(depth), 1.0)
+    }
+
+    /// Composite a cached sprite into the `w`×`h` screen box at `(dsx, dsy)`:
+    /// pick the mip closest to (but not below) the on-screen size, sample it
+    /// bilinearly, light and fog it, and blend by coverage scaled by `alpha`
+    /// (0..=256; the wraith is see-through). `flash` draws it white instead
+    /// (the hit flash). Columns nearer in the wall depth buffer occlude it.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_raster(&mut self, r: &Raster, dsx: i32, dsy: i32, w: i32, h: i32, depth: f64, lit: &Lit, flash: bool, alpha: u32) {
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let (sx0, sx1) = (dsx.max(0), (dsx + w).min(SCREEN_W as i32));
+        let (sy0, sy1) = (dsy.max(0), (dsy + h).min(SCREEN_H as i32));
+        if sx0 >= sx1 || sy0 >= sy1 {
+            return;
+        }
+        let mut level = 0;
+        while level + 1 < MIPS && (SPR >> (level + 1)) as i32 >= w.max(h) {
+            level += 1;
+        }
+        let size = SPR >> level;
+        let tex = &r.levels[level];
+        let last = size as i64 - 1;
+        let (su, sv) = (size as f64 / w as f64, size as f64 / h as f64);
+        let dv = (sv * FP_ONE as f64) as i64;
+        let v_start = ((((sy0 - dsy) as f64 + 0.5) * sv - 0.5) * FP_ONE as f64).floor() as i64;
+        for x in sx0..sx1 {
+            if depth >= self.depth[x as usize] {
+                continue;
+            }
+            let u = ((((x - dsx) as f64 + 0.5) * su - 0.5) * FP_ONE as f64).floor() as i64;
+            let tu = u >> FP_BITS;
+            let wu = ((u >> (FP_BITS - 8)) & 0xFF) as u32;
+            let (x0, x1) = (tu.clamp(0, last) as usize, (tu + 1).clamp(0, last) as usize);
+            let mut v = v_start;
+            let mut idx = sy0 as usize * SCREEN_W + x as usize;
+            for _ in sy0..sy1 {
+                let tv = v >> FP_BITS;
+                let wv = ((v >> (FP_BITS - 8)) & 0xFF) as u32;
+                v += dv;
+                let (r0, r1) = (tv.clamp(0, last) as usize * size, (tv + 1).clamp(0, last) as usize * size);
+                let t = blend4(tex[r0 + x0], tex[r0 + x1], tex[r1 + x0], tex[r1 + x1], wu, wv);
+                if t[0] == 0 {
+                    idx += SCREEN_W;
+                    continue;
+                }
+                let a = ((t[0] * alpha) >> 8).min(255);
+                let src = if flash {
+                    [a, a * 240 / 255, a * 240 / 255]
+                } else {
+                    std::array::from_fn(|c| ((((t[c + 1] * lit.k[c]) >> 8) * alpha) >> 8) + ((a * lit.add[c]) >> 8))
+                };
+                let keep = 255 - a;
+                let keep = keep + (keep >> 7); // 0..=256
+                let dst = self.pixels[idx];
+                let mix = |s: u32, sh: u32| (s + ((((dst >> sh) & 0xFF) * keep) >> 8)).min(255);
+                self.pixels[idx] = (mix(src[0], 16) << 16) | (mix(src[1], 8) << 8) | mix(src[2], 0);
+                idx += SCREEN_W;
+            }
+        }
+    }
+
+    /// A soft dark ellipse on the floor under a sprite, `half_w` wide each
+    /// side of `sx`, centred on the floor line `feet`. Only floor pixels in
+    /// front of the walls take it.
+    fn draw_shadow(&mut self, sx: f64, feet: i32, half_w: f64, depth: f64) {
+        let rx = half_w.max(1.0);
+        let ry = (half_w * 0.22).max(1.5);
+        let x0 = ((sx - rx).floor() as i32).max(0);
+        let x1 = ((sx + rx).ceil() as i32).min(SCREEN_W as i32);
+        let y0 = ((feet as f64 - ry).floor() as i32).max(SCREEN_H as i32 / 2 + 1);
+        let y1 = ((feet as f64 + ry).ceil() as i32).min(SCREEN_H as i32);
+        for x in x0..x1 {
+            if depth >= self.depth[x as usize] {
+                continue;
+            }
+            let nx = (x as f64 + 0.5 - sx) / rx;
+            for y in y0.max(self.wall_bot[x as usize] + 1)..y1 {
+                let ny = (y as f64 + 0.5 - feet as f64) / ry;
+                let d = nx * nx + ny * ny;
+                if d >= 1.0 {
+                    continue;
+                }
+                let keep = (256.0 * (1.0 - 0.5 * (1.0 - d) * (1.0 - d))) as u32;
+                let idx = y as usize * SCREEN_W + x as usize;
+                let c = self.pixels[idx];
+                let ch = |s: u32| ((((c >> s) & 0xFF) * keep) >> 8) << s;
+                self.pixels[idx] = ch(16) | ch(8) | ch(0);
+            }
+        }
+    }
+
+    fn draw_enemy(&mut self, e: Enemy) {
+        let Some((screen_x, tx, base_h)) = self.project(e.x, e.y) else {
+            return;
+        };
+        // Kinds differ in bulk, but they all stand on the same floor: scale the
+        // billboard about its feet so a baron towers instead of sinking.
+        let sprite_h = (base_h as f64 * EN_SCALE[e.kind as usize]) as i32;
+        let sprite_w = sprite_h;
+        let feet = SCREEN_H as i32 / 2 + base_h / 2;
+        let dsx = (screen_x - sprite_w as f64 / 2.0) as i32;
+        let dsy = feet - sprite_h;
+
+        self.draw_shadow(screen_x, feet, sprite_w as f64 * 0.26, tx);
+        let lit = self.sprite_lit(e.x, e.y, tx);
+        let alpha = if e.kind == EN_WRAITH { 184 } else { 256 };
+        let (period, frames) = ENEMY_ANIM[e.kind as usize];
+        let raster = &bank().enemies[e.kind as usize][anim_frame(period, frames, e.anim)];
+        self.draw_raster(raster, dsx, dsy, sprite_w, sprite_h, tx, &lit, e.hit_flash > 0.0, alpha);
     }
 
     fn draw_barrel(&mut self, b: Barrel) {
-        let (px, py, ang) = (self.player.x, self.player.y, self.player.angle);
-        let dx = b.x - px;
-        let dy = b.y - py;
-        let cs = (-ang).cos();
-        let sn = (-ang).sin();
-        let tx = dx * cs - dy * sn;
-        let ty = dx * sn + dy * cs;
-        if tx <= 0.1 {
+        let Some((screen_x, tx, base_h)) = self.project(b.x, b.y) else {
             return;
-        }
-
-        let plane_half = (FOV / 2.0).tan();
-        let screen_x = (SCREEN_W as f64 / 2.0) * (1.0 + ty / (tx * plane_half));
-        let base_h = (SCREEN_H as f64 / tx) as i32;
+        };
         let sz = ((base_h as f64 * 0.72) as i32).max(4);
         let feet = SCREEN_H as i32 / 2 + base_h / 2;
         let dsx = (screen_x - sz as f64 / 2.0) as i32;
-        let dsy = feet - sz;
-
-        let shade = (1.0 - tx / MAX_DEPTH).max(0.3);
-        self.draw_sprite(dsx, dsy, sz, sz, tx, shade, b.hit_flash > 0.0, 1.0, barrel_pixel);
+        self.draw_shadow(screen_x, feet, sz as f64 * 0.3, tx);
+        let lit = self.sprite_lit(b.x, b.y, tx);
+        self.draw_raster(&bank().barrel, dsx, feet - sz, sz, sz, tx, &lit, b.hit_flash > 0.0, 256);
     }
 
     fn draw_fireball(&mut self, fb: Fireball) {
-        let (px, py, ang) = (self.player.x, self.player.y, self.player.angle);
-        let dx = fb.x - px;
-        let dy = fb.y - py;
-        let cs = (-ang).cos();
-        let sn = (-ang).sin();
-        let tx = dx * cs - dy * sn;
-        let ty = dx * sn + dy * cs;
-        if tx <= 0.1 {
+        let Some((screen_x, tx, _)) = self.project(fb.x, fb.y) else {
             return;
-        }
-
-        let plane_half = (FOV / 2.0).tan();
-        let screen_x = (SCREEN_W as f64 / 2.0) * (1.0 + ty / (tx * plane_half));
-        let mut sz = ((SCREEN_H as f64 / tx) * 0.35) as i32;
-        if sz < 2 {
-            sz = 2;
-        }
-        let dsx = (screen_x - sz as f64 / 2.0) as i32;
-        let dsy = -sz / 2 + SCREEN_H as i32 / 2;
-        let sx0 = dsx.max(0);
-        let sx1 = (dsx + sz).min(SCREEN_W as i32);
-        let sy0 = dsy.max(0);
-        let sy1 = (dsy + sz).min(SCREEN_H as i32);
-        let r2 = (sz as f64 * 0.5) * (sz as f64 * 0.5);
-
+        };
+        let sz = (((SCREEN_H as f64 / tx) * 0.35) as i32).max(2);
+        let (cx, cy) = (screen_x, SCREEN_H as f64 / 2.0);
+        let core = sz as f64 * 0.5;
+        let halo = core * 2.2;
+        let sx0 = ((cx - halo) as i32).max(0);
+        let sx1 = ((cx + halo) as i32 + 1).min(SCREEN_W as i32);
+        let sy0 = ((cy - halo) as i32).max(0);
+        let sy1 = ((cy + halo) as i32 + 1).min(SCREEN_H as i32);
         for x in sx0..sx1 {
             if tx >= self.depth[x as usize] {
                 continue;
             }
             for y in sy0..sy1 {
-                let pxd = x as f64 - (dsx as f64 + sz as f64 * 0.5);
-                let pyd = y as f64 - (dsy as f64 + sz as f64 * 0.5);
-                let d2 = pxd * pxd + pyd * pyd;
-                if d2 > r2 {
-                    continue;
+                let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+                let d = (dx * dx + dy * dy).sqrt();
+                let idx = y as usize * SCREEN_W + x as usize;
+                if d < core {
+                    // Hot core, white-yellow in the middle.
+                    let t = (d / core).powi(2);
+                    self.pixels[idx] = make_color((255.0 * (1.0 - t * 0.3)) as i32, (220.0 * (1.0 - t * 0.75)) as i32, (120.0 * (1.0 - t)) as i32);
+                } else if d < halo {
+                    // Additive glow around it.
+                    let g = (1.0 - (d - core) / (halo - core)).powi(2);
+                    let c = self.pixels[idx];
+                    let add = |s: u32, a: f64| ((((c >> s) & 0xFF) as f64 + a * g) as u32).min(255) << s;
+                    self.pixels[idx] = add(16, 170.0) | add(8, 70.0) | add(0, 14.0);
                 }
-                let t = d2 / r2;
-                let r = (255.0 * (1.0 - t * 0.4)) as i32;
-                let g = (180.0 * (1.0 - t)) as i32;
-                let b = (40.0 * (1.0 - t)) as i32;
-                self.pixels[y as usize * SCREEN_W + x as usize] = make_color(r, g, b);
             }
         }
     }
 
     fn draw_pickup(&mut self, p: Pickup) {
-        let (px, py, ang) = (self.player.x, self.player.y, self.player.angle);
-        let dx = p.x - px;
-        let dy = p.y - py;
-        let cs = (-ang).cos();
-        let sn = (-ang).sin();
-        let tx = dx * cs - dy * sn;
-        let ty = dx * sn + dy * cs;
-        if tx <= 0.1 {
+        let Some((screen_x, tx, base_h)) = self.project(p.x, p.y) else {
             return;
-        }
-
-        let plane_half = (FOV / 2.0).tan();
-        let screen_x = (SCREEN_W as f64 / 2.0) * (1.0 + ty / (tx * plane_half));
-        let mut sz = ((SCREEN_H as f64 / tx) * 0.45) as i32;
-        if sz < 4 {
-            sz = 4;
-        }
+        };
+        let sz = (((SCREEN_H as f64 / tx) * 0.45) as i32).max(4);
         let dsx = (screen_x - sz as f64 / 2.0) as i32;
         let bob = (self.global_time * 3.0 + p.x + p.y).sin() * (sz as f64 * 0.08);
         let dsy = (SCREEN_H as f64 / 2.0 + sz as f64 * 0.15 + bob) as i32;
+        let feet = SCREEN_H as i32 / 2 + base_h / 2;
+        self.draw_shadow(screen_x, feet, sz as f64 * 0.36, tx);
+        let lit = self.sprite_lit(p.x, p.y, tx);
+        let kind = (p.kind as usize).min(3);
+        self.draw_raster(&bank().pickups[kind], dsx, dsy, sz, sz, tx, &lit, false, 256);
+    }
 
-        let shade = (1.0 - tx / MAX_DEPTH).max(0.3);
-        let kind = p.kind;
-        self.draw_sprite(dsx, dsy, sz, sz, tx, shade, false, 1.0, move |u, v| match kind {
-            PU_HEALTH => health_pixel(u, v, 0.0),
-            PU_AMMO => ammo_pixel(u, v, 0.0),
-            _ => weapon_pixel(u, v, kind),
-        });
+    fn draw_decor(&mut self, d: Decor) {
+        let Some((screen_x, tx, base_h)) = self.project(d.x, d.y) else {
+            return;
+        };
+        let scale = if d.kind == DEC_TREE { 1.3 } else { 1.0 };
+        let h = (base_h as f64 * scale) as i32;
+        let feet = SCREEN_H as i32 / 2 + base_h / 2;
+        let dsx = (screen_x - h as f64 / 2.0) as i32;
+        let shadow = match d.kind {
+            DEC_CHAINS => 0.0,
+            DEC_TORCH | DEC_LAMP => 0.12,
+            DEC_PILLAR => 0.22,
+            _ => 0.18,
+        };
+        if shadow > 0.0 {
+            self.draw_shadow(screen_x, feet, h as f64 * shadow, tx);
+        }
+        let lit = self.sprite_lit(d.x, d.y, tx);
+        let frame = anim_frame(std::f64::consts::TAU, decor_frames(d.kind), self.global_time * 7.0 + d.phase);
+        self.draw_raster(&bank().decor[d.kind][frame], dsx, feet - h, h, h, tx, &lit, false, 256);
     }
 
     fn draw_particles(&mut self) {
@@ -971,48 +1439,39 @@ impl Game {
     }
 
     pub fn render_sprites(&mut self) {
-        // (distance², kind, index); kind 0=enemy 1=pickup 2=fireball 3=barrel.
-        // Fixed-capacity scratch on the stack — no per-frame allocation.
-        const MAX_SPRITES: usize = MAX_ENEMIES + MAX_PICKUPS + MAX_FIREBALLS + MAX_BARRELS;
+        // (distance², kind, index); kind 0=enemy 1=pickup 2=fireball 3=barrel
+        // 4=decoration. Fixed-capacity scratch on the stack — no per-frame
+        // allocation.
+        const MAX_SPRITES: usize = MAX_ENEMIES + MAX_PICKUPS + MAX_FIREBALLS + MAX_BARRELS + MAX_DECOR;
         let mut refs = [(0.0f64, 0u8, 0usize); MAX_SPRITES];
         let mut n = 0;
         let (px, py) = (self.player.x, self.player.y);
-        for i in 0..MAX_ENEMIES {
-            let e = self.enemies[i];
-            if !(e.alive || e.hit_flash > 0.0) {
-                continue;
-            }
-            let dx = e.x - px;
-            let dy = e.y - py;
-            refs[n] = (dx * dx + dy * dy, 0, i);
+        let mut push = |x: f64, y: f64, kind: u8, i: usize| {
+            refs[n] = ((x - px) * (x - px) + (y - py) * (y - py), kind, i);
             n += 1;
+        };
+        for (i, e) in self.enemies.iter().enumerate() {
+            if e.alive || e.hit_flash > 0.0 {
+                push(e.x, e.y, 0, i);
+            }
         }
-        for i in 0..MAX_PICKUPS {
-            if !self.pickups[i].alive {
-                continue;
+        for (i, p) in self.pickups.iter().enumerate() {
+            if p.alive {
+                push(p.x, p.y, 1, i);
             }
-            let dx = self.pickups[i].x - px;
-            let dy = self.pickups[i].y - py;
-            refs[n] = (dx * dx + dy * dy, 1, i);
-            n += 1;
         }
-        for i in 0..MAX_FIREBALLS {
-            if !self.fireballs[i].alive {
-                continue;
+        for (i, f) in self.fireballs.iter().enumerate() {
+            if f.alive {
+                push(f.x, f.y, 2, i);
             }
-            let dx = self.fireballs[i].x - px;
-            let dy = self.fireballs[i].y - py;
-            refs[n] = (dx * dx + dy * dy, 2, i);
-            n += 1;
         }
-        for i in 0..MAX_BARRELS {
-            if !self.barrels[i].alive {
-                continue;
+        for (i, b) in self.barrels.iter().enumerate() {
+            if b.alive {
+                push(b.x, b.y, 3, i);
             }
-            let dx = self.barrels[i].x - px;
-            let dy = self.barrels[i].y - py;
-            refs[n] = (dx * dx + dy * dy, 3, i);
-            n += 1;
+        }
+        for (i, d) in self.env.decor.iter().enumerate().take(MAX_DECOR) {
+            push(d.x, d.y, 4, i);
         }
         // Far-to-near so nearer sprites overwrite farther ones (stable, so
         // equal distances keep the same draw order as before).
@@ -1023,7 +1482,8 @@ impl Game {
                 0 => self.draw_enemy(self.enemies[idx]),
                 1 => self.draw_pickup(self.pickups[idx]),
                 2 => self.draw_fireball(self.fireballs[idx]),
-                _ => self.draw_barrel(self.barrels[idx]),
+                3 => self.draw_barrel(self.barrels[idx]),
+                _ => self.draw_decor(self.env.decor[idx]),
             }
         }
         self.draw_particles();

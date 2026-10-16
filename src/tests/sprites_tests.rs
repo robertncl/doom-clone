@@ -223,10 +223,20 @@ fn a_fireball_draws_as_a_glowing_ball() {
     g.spawn_fireball(5.0, 8.0, 2.5, 8.0, 0.0, 3.0, 12);
     assert!(sprite_pixels(&mut g) > 200);
 
-    // ...and one behind the camera is skipped.
+    // ...and one behind the camera has no on-screen position to draw at.
     let mut g = corridor();
     g.spawn_fireball(1.2, 8.0, 0.5, 8.0, 0.0, 3.0, 12);
-    assert_eq!(sprite_pixels(&mut g), 0);
+    assert!(g.project(g.fireballs[0].x, g.fireballs[0].y).is_none());
+    g.render_frame(); // and rendering with it there is fine
+}
+
+#[test]
+fn a_fireball_behind_you_still_lights_the_room() {
+    // The ball itself is off screen, but its glow reaches the floor ahead.
+    let mut g = corridor();
+    g.spawn_fireball(1.6, 8.0, 0.5, 8.0, 0.0, 3.0, 12);
+    let lit = sprite_pixels(&mut g);
+    assert!(lit > 0, "the fireball's light should change the view");
 }
 
 #[test]

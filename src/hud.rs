@@ -156,80 +156,89 @@ impl Game {
         }
     }
 
+    /// `fill_rect` for the gun in hand: the colour is lit by the light where
+    /// the player stands, so the weapon darkens in a crypt and glows orange
+    /// beside lava. Kept within a band so it never vanishes or blows out.
+    fn fill_lit(&mut self, x: i32, y: i32, w: i32, h: i32, c: u32) {
+        let k = self.gun_light.map(|l| l.clamp(90, 360) as u32);
+        let ch = |s: u32, k: u32| ((((c >> s) & 0xFF) * k) >> 8).min(255) << s;
+        self.fill_rect(x, y, w, h, ch(16, k[0]) | ch(8, k[1]) | ch(0, k[2]));
+    }
+
     /// Pistol: a compact handgun. Returns the muzzle tip for the flash.
     fn draw_pistol(&mut self, gx: i32, gy: i32) -> (i32, i32) {
         // grip
-        self.fill_rect(gx - 16, gy - 30, 32, 40, 0x402818);
-        self.fill_rect(gx - 16, gy - 30, 32, 4, 0x60381C);
-        self.fill_rect(gx - 16, gy - 2, 32, 4, 0x18100A);
+        self.fill_lit(gx - 16, gy - 30, 32, 40, 0x402818);
+        self.fill_lit(gx - 16, gy - 30, 32, 4, 0x60381C);
+        self.fill_lit(gx - 16, gy - 2, 32, 4, 0x18100A);
         // slide / frame
-        self.fill_rect(gx - 20, gy - 58, 40, 30, 0x383838);
-        self.fill_rect(gx - 20, gy - 58, 40, 4, 0x585858);
-        self.fill_rect(gx - 20, gy - 32, 40, 4, 0x181818);
+        self.fill_lit(gx - 20, gy - 58, 40, 30, 0x383838);
+        self.fill_lit(gx - 20, gy - 58, 40, 4, 0x585858);
+        self.fill_lit(gx - 20, gy - 32, 40, 4, 0x181818);
         // barrel
-        self.fill_rect(gx - 7, gy - 78, 14, 22, 0x202020);
-        self.fill_rect(gx - 7, gy - 78, 4, 22, 0x404040);
-        self.fill_rect(gx + 3, gy - 78, 4, 22, 0x101010);
+        self.fill_lit(gx - 7, gy - 78, 14, 22, 0x202020);
+        self.fill_lit(gx - 7, gy - 78, 4, 22, 0x404040);
+        self.fill_lit(gx + 3, gy - 78, 4, 22, 0x101010);
         // muzzle + sight
-        self.fill_rect(gx - 9, gy - 82, 18, 5, 0x101010);
-        self.fill_rect(gx - 1, gy - 84, 2, 4, 0xC0C0C0);
+        self.fill_lit(gx - 9, gy - 82, 18, 5, 0x101010);
+        self.fill_lit(gx - 1, gy - 84, 2, 4, 0xC0C0C0);
         // trigger guard
-        self.fill_rect(gx - 7, gy - 26, 14, 10, 0x202020);
+        self.fill_lit(gx - 7, gy - 26, 14, 10, 0x202020);
         (gx, gy - 84)
     }
 
     /// Shotgun: the chunky pump-action (the game's original first-person gun).
     fn draw_shotgun(&mut self, gx: i32, gy: i32) -> (i32, i32) {
         // stock
-        self.fill_rect(gx - 55, gy - 40, 110, 50, 0x281810);
-        self.fill_rect(gx - 55, gy - 40, 110, 4, 0x60381C);
-        self.fill_rect(gx - 55, gy - 8, 110, 4, 0x18100A);
+        self.fill_lit(gx - 55, gy - 40, 110, 50, 0x281810);
+        self.fill_lit(gx - 55, gy - 40, 110, 4, 0x60381C);
+        self.fill_lit(gx - 55, gy - 8, 110, 4, 0x18100A);
         // receiver
-        self.fill_rect(gx - 45, gy - 60, 90, 25, 0x383838);
-        self.fill_rect(gx - 45, gy - 60, 90, 4, 0x585858);
-        self.fill_rect(gx - 45, gy - 39, 90, 4, 0x181818);
+        self.fill_lit(gx - 45, gy - 60, 90, 25, 0x383838);
+        self.fill_lit(gx - 45, gy - 60, 90, 4, 0x585858);
+        self.fill_lit(gx - 45, gy - 39, 90, 4, 0x181818);
         // barrel
-        self.fill_rect(gx - 10, gy - 110, 20, 55, 0x202020);
-        self.fill_rect(gx - 10, gy - 110, 4, 55, 0x404040);
-        self.fill_rect(gx + 6, gy - 110, 4, 55, 0x101010);
+        self.fill_lit(gx - 10, gy - 110, 20, 55, 0x202020);
+        self.fill_lit(gx - 10, gy - 110, 4, 55, 0x404040);
+        self.fill_lit(gx + 6, gy - 110, 4, 55, 0x101010);
         // muzzle
-        self.fill_rect(gx - 12, gy - 114, 24, 6, 0x101010);
+        self.fill_lit(gx - 12, gy - 114, 24, 6, 0x101010);
         // pump
-        self.fill_rect(gx - 18, gy - 50, 36, 12, 0x402010);
-        self.fill_rect(gx - 18, gy - 50, 36, 3, 0x804030);
+        self.fill_lit(gx - 18, gy - 50, 36, 12, 0x402010);
+        self.fill_lit(gx - 18, gy - 50, 36, 3, 0x804030);
         // sight
-        self.fill_rect(gx - 1, gy - 116, 2, 4, 0xC0C0C0);
+        self.fill_lit(gx - 1, gy - 116, 2, 4, 0xC0C0C0);
         // trigger guard
-        self.fill_rect(gx - 8, gy - 30, 16, 12, 0x202020);
+        self.fill_lit(gx - 8, gy - 30, 16, 12, 0x202020);
         (gx, gy - 116)
     }
 
     /// Rifle: a long-barreled tactical rifle with a magazine and handguard vents.
     fn draw_rifle(&mut self, gx: i32, gy: i32) -> (i32, i32) {
         // stock (dark green polymer)
-        self.fill_rect(gx - 50, gy - 34, 100, 44, 0x23301E);
-        self.fill_rect(gx - 50, gy - 34, 100, 4, 0x3C5030);
-        self.fill_rect(gx - 50, gy - 2, 100, 4, 0x101810);
+        self.fill_lit(gx - 50, gy - 34, 100, 44, 0x23301E);
+        self.fill_lit(gx - 50, gy - 34, 100, 4, 0x3C5030);
+        self.fill_lit(gx - 50, gy - 2, 100, 4, 0x101810);
         // receiver
-        self.fill_rect(gx - 42, gy - 56, 84, 24, 0x2E2E2E);
-        self.fill_rect(gx - 42, gy - 56, 84, 4, 0x4E4E4E);
-        self.fill_rect(gx - 42, gy - 36, 84, 4, 0x141414);
+        self.fill_lit(gx - 42, gy - 56, 84, 24, 0x2E2E2E);
+        self.fill_lit(gx - 42, gy - 56, 84, 4, 0x4E4E4E);
+        self.fill_lit(gx - 42, gy - 36, 84, 4, 0x141414);
         // magazine
-        self.fill_rect(gx - 6, gy - 30, 16, 36, 0x181818);
-        self.fill_rect(gx - 6, gy - 30, 4, 36, 0x303030);
+        self.fill_lit(gx - 6, gy - 30, 16, 36, 0x181818);
+        self.fill_lit(gx - 6, gy - 30, 4, 36, 0x303030);
         // long barrel
-        self.fill_rect(gx - 6, gy - 128, 12, 74, 0x1C1C1C);
-        self.fill_rect(gx - 6, gy - 128, 4, 74, 0x383838);
-        self.fill_rect(gx + 2, gy - 128, 4, 74, 0x0C0C0C);
+        self.fill_lit(gx - 6, gy - 128, 12, 74, 0x1C1C1C);
+        self.fill_lit(gx - 6, gy - 128, 4, 74, 0x383838);
+        self.fill_lit(gx + 2, gy - 128, 4, 74, 0x0C0C0C);
         // handguard vents
         for i in 0..4 {
-            self.fill_rect(gx - 9, gy - 116 + i * 12, 18, 5, 0x141414);
+            self.fill_lit(gx - 9, gy - 116 + i * 12, 18, 5, 0x141414);
         }
         // muzzle + front sight post
-        self.fill_rect(gx - 9, gy - 132, 18, 6, 0x0A0A0A);
-        self.fill_rect(gx - 1, gy - 140, 2, 8, 0xB0B0B0);
+        self.fill_lit(gx - 9, gy - 132, 18, 6, 0x0A0A0A);
+        self.fill_lit(gx - 1, gy - 140, 2, 8, 0xB0B0B0);
         // trigger guard
-        self.fill_rect(gx - 8, gy - 30, 16, 10, 0x202020);
+        self.fill_lit(gx - 8, gy - 30, 16, 10, 0x202020);
         (gx, gy - 134)
     }
 

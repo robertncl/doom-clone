@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 mod audio;
+mod bench;
 mod bot;
 mod color;
 mod constants;
@@ -19,12 +20,14 @@ mod entity;
 mod game;
 mod hud;
 mod level;
+mod lighting;
 mod render;
 mod selftest;
 mod sprites;
 #[cfg(test)]
 mod tests;
 mod textures;
+mod theme;
 mod types;
 
 use constants::*;
@@ -54,6 +57,8 @@ const KEYMAP: &[(usize, &[Key])] = &[
 struct Args {
     headless: bool,
     selftest: bool,
+    /// Render a fixed set of views and print frame times (`--frames` = reps).
+    bench: bool,
     bot: bool,
     /// Stop after this many frames; negative means run until quit.
     max_frames: i64,
@@ -70,6 +75,7 @@ impl Default for Args {
         Args {
             headless: false,
             selftest: false,
+            bench: false,
             bot: false,
             max_frames: -1,
             shot: None,
@@ -100,6 +106,7 @@ fn parse_args(argv: &[String]) -> Args {
         match argv[i].as_str() {
             "--headless" => a.headless = true,
             "--selftest" => a.selftest = true,
+            "--bench" => a.bench = true,
             "--bot" => a.bot = true,
             "--frames" => {
                 if let Some(v) = value(&mut i) {
@@ -171,6 +178,10 @@ fn shot_game(args: &Args) -> Game {
 fn run(args: &Args) -> i32 {
     if args.selftest {
         return selftest::run_self_test();
+    }
+    if args.bench {
+        let reps = if args.max_frames > 0 { args.max_frames as usize } else { 30 };
+        return bench::run_bench(reps);
     }
 
     // Render a single frame of one level to a PPM and exit (renderer check).

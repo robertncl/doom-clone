@@ -328,6 +328,7 @@ impl Game {
             let (bx, by) = (self.barrels[queue[head]].x, self.barrels[queue[head]].y);
             head += 1;
             self.audio.play(SND_EXPLOSION);
+            self.add_flash(bx, by);
 
             // Fireball puff: a bright core of embers plus a slower smoke ring.
             for k in 0..20 {
@@ -541,6 +542,9 @@ impl Game {
         }
         if self.hazard_snd_t > 0.0 {
             self.hazard_snd_t -= dt;
+        }
+        for f in self.flashes.iter_mut() {
+            f.life -= dt;
         }
 
         if self.show_intro {

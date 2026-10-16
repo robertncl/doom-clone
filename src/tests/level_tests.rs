@@ -73,8 +73,8 @@ fn the_hazard_flag_matches_the_map_contents() {
     let mut g = super::new_game();
     for n in 0..LEVEL_COUNT {
         g.load_level(n);
-        let has_lava = LEVELS[n].iter().any(|row| row.contains('~'));
-        assert_eq!(g.has_hazard, has_lava, "level {n} hazard flag disagrees with its map");
+        let map_has_lava = LEVELS[n].iter().any(|row| row.contains('~'));
+        assert_eq!(has_lava(&g), map_has_lava, "level {n} hazard flag disagrees with its map");
     }
 }
 
@@ -84,7 +84,7 @@ fn later_levels_are_the_ones_with_the_new_mechanics() {
     // The first five levels stay approachable: no lava, no barrels, no heavies.
     for n in 0..5 {
         g.load_level(n);
-        assert!(!g.has_hazard, "level {} should have no lava", n + 1);
+        assert!(!has_lava(&g), "level {} should have no lava", n + 1);
         assert_eq!(g.barrels.iter().filter(|b| b.alive).count(), 0);
         assert!(
             !g.enemies.iter().any(|e| e.alive && (e.kind == EN_BARON || e.kind == EN_WRAITH)),
@@ -98,7 +98,7 @@ fn later_levels_are_the_ones_with_the_new_mechanics() {
     let mut barons = 0;
     for n in 5..LEVEL_COUNT {
         g.load_level(n);
-        lava |= g.has_hazard;
+        lava |= has_lava(&g);
         barrels += g.barrels.iter().filter(|b| b.alive).count();
         barons += g.enemies.iter().filter(|e| e.alive && e.kind == EN_BARON).count();
     }

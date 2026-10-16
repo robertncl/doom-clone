@@ -445,7 +445,6 @@ fn barrel_lookup_finds_only_live_barrels_in_range() {
 fn lava_burns_the_player_at_the_tuned_rate() {
     let mut g = open_room();
     g.cur_map[2][2] = b'~'; // the tile the player is standing on
-    g.has_hazard = true;
 
     for _ in 0..60 {
         g.update_hazard(1.0 / 60.0);
@@ -471,7 +470,6 @@ fn lava_burns_the_player_at_the_tuned_rate() {
 fn a_lava_burn_cannot_push_health_below_zero() {
     let mut g = open_room();
     g.cur_map[2][2] = b'~';
-    g.has_hazard = true;
     g.player.health = 3;
     for _ in 0..600 {
         g.update_hazard(1.0 / 60.0);
@@ -483,7 +481,6 @@ fn a_lava_burn_cannot_push_health_below_zero() {
 fn a_partial_frame_of_lava_does_no_whole_damage_yet() {
     let mut g = open_room();
     g.cur_map[2][2] = b'~';
-    g.has_hazard = true;
     g.update_hazard(1.0 / 600.0); // far less than one point's worth
     assert_eq!(g.player.health, 100, "fractional burn accrues, it doesn't round up");
     assert!(g.hazard_burn > 0.0);
@@ -879,7 +876,6 @@ fn clearing_the_last_level_wins_the_game() {
 #[test]
 fn a_full_frame_runs_every_subsystem_together() {
     let mut g = open_room();
-    g.has_hazard = true;
     g.cur_map[2][2] = b'~';
     put_enemy(&mut g, 0, 5.0, 2.5, EN_IMP);
     put_barrel(&mut g, 0, 8.0, 8.0);

@@ -52,11 +52,11 @@ fn flat_tex(c: u32) -> Box<Tex> {
 #[test]
 fn sampling_a_flat_texture_returns_that_colour_shaded() {
     let tex = flat_tex(0x0080_8080);
-    let full = sample_tex_bilinear_shaded(&tex, 10.0, 10.0, shade_fp(1.0));
+    let full = sample_lit(&tex, 10.0, 10.0, &Lit::uniform(shade_fp(1.0)));
     assert_eq!(full, 0x0080_8080, "unshaded sampling is the texel itself");
-    let dark = sample_tex_bilinear_shaded(&tex, 10.0, 10.0, shade_fp(0.5));
+    let dark = sample_lit(&tex, 10.0, 10.0, &Lit::uniform(shade_fp(0.5)));
     assert_eq!(dark, make_color(64, 64, 64));
-    let black = sample_tex_bilinear_shaded(&tex, 10.0, 10.0, 0);
+    let black = sample_lit(&tex, 10.0, 10.0, &Lit::uniform(0));
     assert_eq!(black, 0);
 }
 
@@ -66,7 +66,7 @@ fn sampling_wraps_around_the_texture_edges() {
     // Way outside 0..TEX_SIZE, in both directions — the sampler masks, so these
     // must all land on a real texel rather than panicking or reading garbage.
     for (u, v) in [(-5.0, -5.0), (0.0, 0.0), (1e4, -1e4), (TEX_SIZE as f64 + 0.5, 3.5)] {
-        assert_eq!(sample_tex_bilinear_shaded(&tex, u, v, shade_fp(1.0)), 0x0040_5060);
+        assert_eq!(sample_lit(&tex, u, v, &Lit::uniform(shade_fp(1.0))), 0x0040_5060);
     }
 }
 
@@ -82,7 +82,7 @@ fn bilinear_blending_lands_between_two_texel_colours() {
     }
     let tex: Box<Tex> = buf.into_boxed_slice().try_into().unwrap();
     let mid = TEX_SIZE as f64 / 2.0;
-    let blended = sample_tex_bilinear_shaded(&tex, mid, 10.0, shade_fp(1.0));
+    let blended = sample_lit(&tex, mid, 10.0, &Lit::uniform(shade_fp(1.0)));
     let r = (blended >> 16) & 0xFF;
     assert!((1..255).contains(&r), "expected a blend across the seam, got {r}");
 }
@@ -91,9 +91,9 @@ fn bilinear_blending_lands_between_two_texel_colours() {
 fn the_column_sampler_agrees_with_the_general_one() {
     let tex = flat_tex(0x0011_2233);
     let sh = shade_fp(0.75);
-    let general = sample_tex_bilinear_shaded(&tex, 8.5, 12.25, sh);
+    let general = sample_lit(&tex, 8.5, 12.25, &Lit::uniform(sh));
     // Same texel pair the wall loop would hoist for u = 8.5.
-    let col = sample_tex_bilinear_col(&tex, 8, 9, 0, 12.25, sh);
+    let col = shade4(fetch_col(&tex, 8, 9, 0, to_fp(12.25)), &Lit::uniform(sh));
     assert_eq!(general, col);
 }
 
@@ -101,6 +101,6 @@ fn the_column_sampler_agrees_with_the_general_one() {
 fn the_column_sampler_masks_indices_into_range() {
     let tex = flat_tex(0x00AA_BBCC);
     // Deliberately out-of-range x indices: the sampler re-masks them.
-    let c = sample_tex_bilinear_col(&tex, TEX_SIZE + 3, TEX_SIZE + 4, 128, 5.0, shade_fp(1.0));
+    let c = shade4(fetch_col(&tex, TEX_SIZE + 3, TEX_SIZE + 4, 128, to_fp(5.0)), &Lit::uniform(shade_fp(1.0)));
     assert_eq!(c, 0x00AA_BBCC);
 }
