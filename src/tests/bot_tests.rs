@@ -26,7 +26,6 @@ fn line_of_sight_is_blocked_by_walls_and_clear_otherwise() {
 fn lava_does_not_block_line_of_sight() {
     let mut g = open_room();
     g.cur_map[2][6] = b'~';
-    g.has_hazard = true;
     assert!(g.bot_los(2.5, 2.5, 12.5, 2.5), "you can see across a lava pool");
 }
 
@@ -79,7 +78,6 @@ fn the_hazard_avoiding_field_refuses_to_cross_lava() {
     for y in 0..MAP_H {
         g.cur_map[y][6] = b'~';
     }
-    g.has_hazard = true;
 
     let safe = g.bot_field_ex(2, 2, true);
     assert_eq!(safe[2][10], -1, "the dry field stops at the lava");
@@ -94,7 +92,6 @@ fn a_dry_detour_is_preferred_over_a_lava_shortcut() {
     for y in 3..MAP_H {
         g.cur_map[y][6] = b'~';
     }
-    g.has_hazard = true;
     let safe = g.bot_field_ex(2, 8, true);
     assert!(safe[8][10] > 0, "there is still a dry route round the pool");
 }
@@ -298,7 +295,6 @@ fn an_enemy_visible_but_unwalkable_is_still_engaged() {
             g.cur_map[y][x] = b'~';
         }
     }
-    g.has_hazard = true;
     g.player.x = 3.0;
     g.player.y = 8.0;
     put_enemy(&mut g, 0, 9.5, 8.0, EN_GRUNT);
@@ -342,7 +338,6 @@ fn the_bot_will_not_loiter_in_lava() {
     let mut g = open_room();
     // Standing in fire, at the range where it would otherwise hold position.
     g.cur_map[8][8] = b'~';
-    g.has_hazard = true;
     g.player.x = 8.5;
     g.player.y = 8.5;
     put_enemy(&mut g, 0, 11.5, 8.5, EN_GRUNT);
@@ -357,7 +352,6 @@ fn the_bot_crosses_lava_when_that_is_the_only_way_through() {
     for y in 0..MAP_H {
         g.cur_map[y][6] = b'~';
     }
-    g.has_hazard = true;
     g.player.x = 2.5;
     g.player.y = 8.0;
     put_enemy(&mut g, 0, 12.0, 8.0, EN_GRUNT);

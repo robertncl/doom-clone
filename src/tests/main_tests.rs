@@ -276,3 +276,11 @@ fn headless_mode_runs_the_requested_frames() {
     let args = parse_args(&argv(&["--headless", "--frames", "30"]));
     assert_eq!(run(&args), 0);
 }
+
+#[test]
+fn bench_mode_is_parsed_and_runs() {
+    let a = parse_args(&argv(&["--bench", "--frames", "1"]));
+    assert!(a.bench);
+    assert_eq!(a.max_frames, 1);
+    assert_eq!(run(&a), 0, "a one-repetition bench completes");
+}

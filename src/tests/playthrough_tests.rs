@@ -136,7 +136,7 @@ fn the_player_takes_lava_damage_during_real_play() {
     g.reset_game();
     g.show_intro = false;
     g.load_level(LEVEL_COUNT - 1);
-    assert!(g.has_hazard);
+    assert!(has_lava(&g));
     let mut burned = false;
     for _ in 0..3600 {
         g.bot_think(1.0 / 60.0);

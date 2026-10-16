@@ -146,7 +146,6 @@ fn lava_tiles_paint_a_different_floor_than_plain_ground() {
                 }
             }
         }
-        g.has_hazard = true;
         g.render_frame();
         px(&g, SCREEN_W / 2, SCREEN_H / 2 + 40)
     };
@@ -166,7 +165,6 @@ fn the_hazard_floor_path_handles_a_view_off_the_edge_of_the_map() {
             g.cur_map[y][x] = if x == 0 || y == 0 { b'~' } else { b'.' };
         }
     }
-    g.has_hazard = true;
     g.player.x = 1.5;
     g.player.y = 1.5;
     for angle in [0.0, 1.5, 3.0, 4.5] {

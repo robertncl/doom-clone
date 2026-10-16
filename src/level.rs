@@ -205,7 +205,6 @@ impl Game {
         let mut e_idx = 0usize;
         let mut p_idx = 0usize;
         let mut b_idx = 0usize;
-        self.has_hazard = false;
         for y in 0..MAP_H {
             let row = map[y].as_bytes();
             for x in 0..MAP_W {
@@ -282,7 +281,6 @@ impl Game {
                         }
                         dest = b'.';
                     }
-                    b'~' => self.has_hazard = true,
                     _ => {}
                 }
                 self.cur_map[y][x] = dest;

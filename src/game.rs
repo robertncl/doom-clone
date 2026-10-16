@@ -4,6 +4,7 @@
 use crate::audio::Audio;
 use crate::constants::*;
 use crate::difficulty::SKILL_NORMAL;
+use crate::lighting::{Environment, Flash, MAX_FLASHES};
 use crate::textures::Textures;
 use crate::types::*;
 use std::io::{BufRead, Read, Write};
@@ -30,9 +31,6 @@ pub struct Game {
     /// Cooldown so a long lava crossing doesn't retrigger the hurt sound every
     /// time another whole point of burn lands.
     pub hazard_snd_t: f64,
-    /// True when the current level contains any `~` tile. The floor cast pays
-    /// for the per-pixel hazard lookup only when this is set.
-    pub has_hazard: bool,
     /// Difficulty, `SKILL_*` (see difficulty.rs). Survives restarts.
     pub skill: usize,
 
@@ -45,10 +43,22 @@ pub struct Game {
 
     pub pixels: Vec<u32>,
     pub depth: Vec<f64>,
+    /// Rows each screen column's wall band covers (top and bottom, inclusive),
+    /// so the floor pass can skip pixels a wall already painted.
+    pub wall_top: Vec<i32>,
+    pub wall_bot: Vec<i32>,
     /// Current level's working map (walls + cleared floor cells), as ASCII bytes.
     pub cur_map: [[u8; MAP_W]; MAP_H],
 
-    pub tex: Textures,
+    /// Shared, immutable texture set (built once per process).
+    pub tex: &'static Textures,
+    /// The current level's dressing and lighting (see `lighting.rs`).
+    pub env: Environment,
+    /// Light bursts from explosions, fading out.
+    pub flashes: [Flash; MAX_FLASHES],
+    /// Light at the player this frame, so the gun in hand dims and tints with
+    /// the room it is in.
+    pub gun_light: [i32; 3],
     pub audio: Audio,
     pub bot: Bot,
     /// Where the high-score table is kept. A field rather than a hard-wired
@@ -78,7 +88,6 @@ impl Game {
             global_time: 0.0,
             hazard_burn: 0.0,
             hazard_snd_t: 0.0,
-            has_hazard: false,
             skill: SKILL_NORMAL,
             player: Player::default(),
             enemies: [Enemy::default(); MAX_ENEMIES],
@@ -88,8 +97,13 @@ impl Game {
             barrels: [Barrel::default(); MAX_BARRELS],
             pixels: vec![0; SCREEN_W * SCREEN_H],
             depth: vec![0.0; SCREEN_W],
+            wall_top: vec![SCREEN_H as i32 / 2; SCREEN_W],
+            wall_bot: vec![SCREEN_H as i32 / 2; SCREEN_W],
             cur_map: [[b'.'; MAP_W]; MAP_H],
-            tex: Textures::build(),
+            tex: Textures::shared(),
+            env: Environment::default(),
+            flashes: [Flash::default(); MAX_FLASHES],
+            gun_light: [crate::lighting::LIGHT_ONE; 3],
             audio: Audio::new(),
             bot: Bot::default(),
             score_file: HIGHSCORE_FILE.to_string(),
@@ -152,6 +166,7 @@ impl Game {
         self.parts = [Particle::default(); MAX_PARTICLES];
         self.pickups = [Pickup::default(); MAX_PICKUPS];
         self.barrels = [Barrel::default(); MAX_BARRELS];
+        self.flashes = [Flash::default(); MAX_FLASHES];
         self.hazard_burn = 0.0;
     }
 

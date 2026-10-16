@@ -1,10 +1,21 @@
 //! Color packing, value noise, shading, and bilinear texture sampling.
 //!
 //! Colors are packed as `0x00RRGGBB` (the byte layout minifb expects), exactly
-//! matching the C `makeColor`.
+//! matching the C `makeColor`. Textures add an emission byte on top
+//! (`0xEERRGGBB`, see `textures.rs`).
+//!
+//! The samplers work in fixed point: texture coordinates are texels with
+//! [`FP_BITS`] fractional bits, so the hot loops step them with integer adds
+//! and pull texel indices and blend weights out with shifts and masks — no
+//! float-to-int conversions per pixel.
 
 use crate::constants::TEX_SIZE;
 use crate::textures::Tex;
+
+/// Fractional bits in a fixed-point texture coordinate.
+pub const FP_BITS: u32 = 16;
+/// One texel in fixed point.
+pub const FP_ONE: i64 = 1 << FP_BITS;
 
 /// Clamp the three channels to 0..=255 and pack into `0x00RRGGBB`.
 #[inline]
@@ -45,57 +56,90 @@ pub fn shade_fp(shade: f64) -> u32 {
     (shade.clamp(0.0, 1.0) * 256.0) as u32
 }
 
-/// Bilinear blend + shade of four texels with `0..=256` fixed-point weights.
-/// Per channel: blend the two rows in X, blend those in Y (>>16 → 0..=255),
-/// then apply shade (* sh >> 8 → 0..=255). The three channels run the same
-/// instruction sequence, which LLVM auto-vectorizes — resist the temptation to
-/// pack channels into wider lanes by hand; measured slower here.
-#[inline]
-fn bilinear_finish(c00: u32, c10: u32, c01: u32, c11: u32, wu: u32, wv: u32, sh: u32) -> u32 {
+/// How to light a texel: per-channel light `k` (256 = as painted, already
+/// multiplied by how much survives the fog), the strength `ke` of the texel's
+/// own glow (0..=256, also fog-attenuated), and the fog colour scattered in
+/// on top (`add`, 0..=255 per channel). Constant along a wall column; along a
+/// floor row only `k` changes, and that is interpolated.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lit {
+    pub k: [u32; 3],
+    pub ke: u32,
+    pub add: [u32; 3],
+}
+
+impl Lit {
+    /// Plain shading by one factor: no glow, no fog.
+    pub fn uniform(sh: u32) -> Lit {
+        Lit { k: [sh; 3], ke: 0, add: [0; 3] }
+    }
+}
+
+/// Bilinear blend of four `0xEERRGGBB` texels with `0..=256` fixed-point
+/// weights, returning `[emission, r, g, b]` each 0..=255. The four channels
+/// run the same instruction sequence, which LLVM vectorizes — resist packing
+/// channels into wider lanes by hand; measured slower here.
+#[inline(always)]
+pub(crate) fn blend4(c00: u32, c10: u32, c01: u32, c11: u32, wu: u32, wv: u32) -> [u32; 4] {
     let iwu = 256 - wu;
     let iwv = 256 - wv;
     let blend = |shift: u32| -> u32 {
         let top = ((c00 >> shift) & 0xFF) * iwu + ((c10 >> shift) & 0xFF) * wu;
         let bot = ((c01 >> shift) & 0xFF) * iwu + ((c11 >> shift) & 0xFF) * wu;
-        let val = (top * iwv + bot * wv) >> 16;
-        (val * sh) >> 8
+        (top * iwv + bot * wv) >> 16
     };
-    (blend(16) << 16) | (blend(8) << 8) | blend(0)
+    [blend(24), blend(16), blend(8), blend(0)]
 }
 
-/// Bilinear texture fetch (wrap-around) **and** distance shading in one integer
-/// fixed-point pass. `(u, v)` are in texel units; each `TEX_SIZE` block tiles
-/// seamlessly so the wrap blends cleanly. `sh` is a [`shade_fp`] factor.
-#[inline]
-pub fn sample_tex_bilinear_shaded(tex: &Tex, u: f64, v: f64, sh: u32) -> u32 {
-    let fu = u - 0.5;
-    let fv = v - 0.5;
-    let u0 = fu.floor();
-    let v0 = fv.floor();
-    let wu = ((fu - u0) * 256.0) as u32; // sub-texel X, 0..=255
-    let wv = ((fv - v0) * 256.0) as u32; // sub-texel Y, 0..=255
+/// Light a blended texel: colour × (light + own glow), plus fog, clamped.
+#[inline(always)]
+pub fn shade4(t: [u32; 4], lit: &Lit) -> u32 {
+    let e = (t[0] * lit.ke) >> 8;
+    let r = (((t[1] * (lit.k[0] + e)) >> 8) + lit.add[0]).min(255);
+    let g = (((t[2] * (lit.k[1] + e)) >> 8) + lit.add[1]).min(255);
+    let b = (((t[3] * (lit.k[2] + e)) >> 8) + lit.add[2]).min(255);
+    (r << 16) | (g << 8) | b
+}
 
-    let mask = (TEX_SIZE - 1) as i32;
-    let x0 = (u0 as i32 & mask) as usize;
-    let x1 = ((u0 as i32 + 1) & mask) as usize;
-    let row0 = (v0 as i32 & mask) as usize * TEX_SIZE;
-    let row1 = ((v0 as i32 + 1) & mask) as usize * TEX_SIZE;
-
-    bilinear_finish(tex[row0 + x0], tex[row0 + x1], tex[row1 + x0], tex[row1 + x1], wu, wv, sh)
+/// Bilinear fetch at fixed-point texel coordinates. `u`/`v` are already offset
+/// by half a texel (so texel centres land on whole numbers); the texture wraps.
+#[inline(always)]
+pub fn fetch_bilinear(tex: &Tex, u: i64, v: i64) -> [u32; 4] {
+    let mask = (TEX_SIZE - 1) as i64;
+    let (tu, tv) = (u >> FP_BITS, v >> FP_BITS);
+    let wu = ((u >> (FP_BITS - 8)) & 0xFF) as u32;
+    let wv = ((v >> (FP_BITS - 8)) & 0xFF) as u32;
+    let x0 = (tu & mask) as usize;
+    let x1 = ((tu + 1) & mask) as usize;
+    let row0 = (tv & mask) as usize * TEX_SIZE;
+    let row1 = ((tv + 1) & mask) as usize * TEX_SIZE;
+    blend4(tex[row0 + x0], tex[row0 + x1], tex[row1 + x0], tex[row1 + x1], wu, wv)
 }
 
 /// Wall-column variant: the horizontal texel pair and X weight are constant
 /// down a whole column, so the caller hoists them and only `v` varies here.
 /// `x0`/`x1` are re-masked so the compiler can prove the fetches in bounds.
-#[inline]
-pub fn sample_tex_bilinear_col(tex: &Tex, x0: usize, x1: usize, wu: u32, v: f64, sh: u32) -> u32 {
+#[inline(always)]
+pub fn fetch_col(tex: &Tex, x0: usize, x1: usize, wu: u32, v: i64) -> [u32; 4] {
     let x0 = x0 & (TEX_SIZE - 1);
     let x1 = x1 & (TEX_SIZE - 1);
-    let fv = v - 0.5;
-    let v0 = fv.floor();
-    let wv = ((fv - v0) * 256.0) as u32;
-    let mask = (TEX_SIZE - 1) as i32;
-    let row0 = (v0 as i32 & mask) as usize * TEX_SIZE;
-    let row1 = ((v0 as i32 + 1) & mask) as usize * TEX_SIZE;
-    bilinear_finish(tex[row0 + x0], tex[row0 + x1], tex[row1 + x0], tex[row1 + x1], wu, wv, sh)
+    let mask = (TEX_SIZE - 1) as i64;
+    let tv = v >> FP_BITS;
+    let wv = ((v >> (FP_BITS - 8)) & 0xFF) as u32;
+    let row0 = (tv & mask) as usize * TEX_SIZE;
+    let row1 = ((tv + 1) & mask) as usize * TEX_SIZE;
+    blend4(tex[row0 + x0], tex[row0 + x1], tex[row1 + x0], tex[row1 + x1], wu, wv)
+}
+
+/// Texel-space `f64` to the samplers' fixed point, including the half-texel
+/// offset that centres bilinear filtering.
+#[inline]
+pub fn to_fp(texels: f64) -> i64 {
+    ((texels - 0.5) * FP_ONE as f64).floor() as i64
+}
+
+/// Sample and light one texel at float texel coordinates — the convenience
+/// form of [`fetch_bilinear`] + [`shade4`] for code outside the hot loops.
+pub fn sample_lit(tex: &Tex, u: f64, v: f64, lit: &Lit) -> u32 {
+    shade4(fetch_bilinear(tex, to_fp(u), to_fp(v)), lit)
 }

@@ -15,6 +15,7 @@
 mod audio_tests;
 mod bot_tests;
 mod color_tests;
+mod environment_tests;
 mod difficulty_tests;
 mod entity_tests;
 mod game_tests;
@@ -53,7 +54,6 @@ pub fn open_room() -> Game {
             g.cur_map[y][x] = if edge { b'#' } else { b'.' };
         }
     }
-    g.has_hazard = false;
     g.player.x = 2.5;
     g.player.y = 2.5;
     g.player.angle = 0.0;
@@ -83,6 +83,11 @@ pub fn put_pickup(g: &mut Game, i: usize, x: f64, y: f64, kind: i32) {
     g.pickups[i].y = y;
     g.pickups[i].kind = kind;
     g.pickups[i].alive = true;
+}
+
+/// True if the loaded map has any lava tile.
+pub fn has_lava(g: &Game) -> bool {
+    g.cur_map.iter().flatten().any(|&c| c == b'~')
 }
 
 pub fn live_enemies(g: &Game) -> usize {
