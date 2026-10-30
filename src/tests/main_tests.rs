@@ -284,3 +284,14 @@ fn bench_mode_is_parsed_and_runs() {
     assert_eq!(a.max_frames, 1);
     assert_eq!(run(&a), 0, "a one-repetition bench completes");
 }
+
+#[test]
+fn lang_takes_a_code_or_a_locale() {
+    use crate::i18n::*;
+    assert_eq!(parse_args(&argv(&["--lang", "ja"])).lang, Some(LANG_JA));
+    assert_eq!(parse_args(&argv(&["--lang", "de_DE.UTF-8"])).lang, Some(LANG_DE));
+    assert_eq!(parse_args(&argv(&["--lang", "xx"])).lang, None, "junk keeps the default");
+    assert_eq!(parse_args(&argv(&["--lang"])).lang, None);
+    let g = shot_game(&parse_args(&argv(&["--shot", "x.ppm", "--lang", "zh"])));
+    assert_eq!(g.lang, LANG_ZH);
+}

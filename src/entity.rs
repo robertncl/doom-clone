@@ -546,6 +546,11 @@ impl Game {
         for f in self.flashes.iter_mut() {
             f.life -= dt;
         }
+        // L cycles the language anywhere — title screen, play or game over.
+        if self.key_edge[K_LANG] {
+            self.key_edge[K_LANG] = false;
+            self.lang = (self.lang + 1) % crate::i18n::LANG_COUNT;
+        }
 
         if self.show_intro {
             if self.key_edge[K_QUIT] {

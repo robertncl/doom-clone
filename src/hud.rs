@@ -3,7 +3,9 @@
 
 use crate::color::make_color;
 use crate::constants::*;
-use crate::difficulty::{SKILL_COLORS, SKILL_COUNT, SKILL_NAMES};
+use crate::cjk_glyphs;
+use crate::difficulty::{SKILL_COLORS, SKILL_COUNT};
+use crate::i18n::*;
 use crate::game::Game;
 
 /// `c` with each channel multiplied by `num/den`.
@@ -37,13 +39,74 @@ const DIGIT_GLYPH: [u16; 10] = [
     0x7B67, 0x2C97, 0x62A7, 0x628E, 0x5BC9, 0x798E, 0x39EF, 0x7292, 0x7BE7, 0x7BCE,
 ];
 
-/// Width in pixels of a string in the small font (` ` = 4px, else 8px).
+/// True for characters drawn as 16×16 CJK glyphs (kana, ideographs, CJK
+/// punctuation and fullwidth forms all sit at or above U+2E80).
+pub fn is_wide(c: char) -> bool {
+    c as u32 >= 0x2E80
+}
+
+/// Width in pixels of a string: a space is 4px, a CJK glyph 16px, anything
+/// else one 8px cell of the small font.
 pub fn text_width(s: &str) -> i32 {
-    let mut w = 0;
-    for &ch in s.as_bytes() {
-        w += if ch == b' ' { 4 } else { 8 };
-    }
-    w
+    s.chars().map(|c| if c == ' ' { 4 } else if is_wide(c) { 16 } else { 8 }).sum()
+}
+
+/// True if `s` contains any CJK glyph, which stands taller than the Latin font.
+pub fn has_wide(s: &str) -> bool {
+    s.chars().any(is_wide)
+}
+
+/// Marks drawn over (or under) a base letter for French and German.
+#[derive(Clone, Copy)]
+enum Accent {
+    Acute,
+    Grave,
+    Circumflex,
+    Diaeresis,
+    Cedilla,
+}
+
+/// An accented capital as its base letter plus a mark. Lower case folds to
+/// upper, like the rest of the font.
+fn accented(c: char) -> Option<(u8, Accent)> {
+    use Accent::*;
+    Some(match c.to_uppercase().next()? {
+        'É' => (b'E', Acute),
+        'È' => (b'E', Grave),
+        'Ê' => (b'E', Circumflex),
+        'Ë' => (b'E', Diaeresis),
+        'À' => (b'A', Grave),
+        'Â' => (b'A', Circumflex),
+        'Ä' => (b'A', Diaeresis),
+        'Î' => (b'I', Circumflex),
+        'Ï' => (b'I', Diaeresis),
+        'Ô' => (b'O', Circumflex),
+        'Ö' => (b'O', Diaeresis),
+        'Ù' => (b'U', Grave),
+        'Û' => (b'U', Circumflex),
+        'Ü' => (b'U', Diaeresis),
+        'Ç' => (b'C', Cedilla),
+        _ => return None,
+    })
+}
+
+/// True if the text renderer can draw `c` in language `lang`.
+pub fn can_draw(c: char, lang: usize) -> bool {
+    c == ' '
+        || c.is_ascii_alphanumeric()
+        || "/-:.".contains(c)
+        || accented(c).is_some()
+        || cjk_glyph(c, lang).is_some()
+}
+
+/// The 16×16 bitmap for a CJK character: the Japanese form when the text is
+/// Japanese, the Chinese form otherwise (falling back to the other table).
+fn cjk_glyph(c: char, lang: usize) -> Option<&'static [u16; 16]> {
+    type Table = &'static [(char, [u16; 16])];
+    let find = |t: Table| t.binary_search_by_key(&c, |e| e.0).ok().map(|i| &t[i].1);
+    let (first, second): (Table, Table) =
+        if lang == LANG_JA { (&cjk_glyphs::JA, &cjk_glyphs::ZH) } else { (&cjk_glyphs::ZH, &cjk_glyphs::JA) };
+    find(first).or_else(|| find(second))
 }
 
 impl Game {
@@ -103,16 +166,65 @@ impl Game {
         }
     }
 
+    fn draw_accent(&mut self, a: Accent, x: i32, y: i32, c: u32) {
+        // Marks sit in the three rows above the 10px-tall letter (the
+        // cedilla hangs below it), so they never touch the letter itself.
+        let marks: &[(i32, i32, i32, i32)] = match a {
+            Accent::Acute => &[(1, -1, 2, 1), (2, -2, 2, 1), (3, -3, 2, 1)],
+            Accent::Grave => &[(3, -1, 2, 1), (2, -2, 2, 1), (1, -3, 2, 1)],
+            Accent::Circumflex => &[(0, -1, 2, 1), (2, -3, 2, 2), (4, -1, 2, 1)],
+            Accent::Diaeresis => &[(0, -3, 2, 2), (4, -3, 2, 2)],
+            Accent::Cedilla => &[(2, 10, 2, 1), (3, 11, 2, 1), (1, 12, 3, 1)],
+        };
+        for &(dx, dy, w, h) in marks {
+            self.fill_rect(x + dx, y + dy, w, h, c);
+        }
+    }
+
+    /// Draw a 16×16 CJK glyph. It stands 4px above the Latin text's top so the
+    /// two scripts share a centre line.
+    fn draw_cjk(&mut self, rows: &[u16; 16], x: i32, y: i32, c: u32) {
+        for (r, bits) in rows.iter().enumerate() {
+            for col in 0..16 {
+                if bits & (0x8000 >> col) != 0 {
+                    self.put_pixel(x + col, y - 4 + r as i32, c);
+                }
+            }
+        }
+    }
+
+    /// Draw `s` in the current language's forms (this matters for CJK, where
+    /// Japanese and Chinese draw some characters differently).
     pub fn draw_text(&mut self, s: &str, x: i32, y: i32, c: u32) {
+        self.draw_text_lang(s, x, y, c, self.lang);
+    }
+
+    /// Draw `s` using language `lang`'s glyph forms.
+    pub fn draw_text_lang(&mut self, s: &str, x: i32, y: i32, c: u32, lang: usize) {
         let mut dx = 0;
-        for &ch in s.as_bytes() {
-            if ch == b' ' {
+        for ch in s.chars() {
+            if ch == ' ' {
                 dx += 4;
+            } else if is_wide(ch) {
+                if let Some(rows) = cjk_glyph(ch, lang) {
+                    self.draw_cjk(rows, x + dx, y, c);
+                }
+                dx += 16;
             } else {
-                self.draw_letter(ch, x + dx, y, c);
+                if ch.is_ascii() {
+                    self.draw_letter(ch as u8, x + dx, y, c);
+                } else if let Some((base, mark)) = accented(ch) {
+                    self.draw_letter(base, x + dx, y, c);
+                    self.draw_accent(mark, x + dx, y, c);
+                }
                 dx += 8;
             }
         }
+    }
+
+    /// Translated text in the current language.
+    pub fn t(&self, m: Msg) -> &'static str {
+        tr(self.lang, m)
     }
 
     pub fn draw_weapon(&mut self) {
@@ -333,21 +445,23 @@ impl Game {
         } else {
             0xE04040
         };
-        self.draw_text("HEALTH", 20, bar_y + 6, 0xC0A080);
+        self.draw_text(self.t(Msg::Health), 20, bar_y + 6, 0xC0A080);
         self.draw_number(self.player.health, 20, bar_y + 18, hc);
 
         // Ammo
-        self.draw_text("AMMO", SCREEN_W as i32 - 80, bar_y + 6, 0xC0A080);
+        self.draw_text(self.t(Msg::Ammo), SCREEN_W as i32 - 80, bar_y + 6, 0xC0A080);
         self.draw_number(self.player.ammo, SCREEN_W as i32 - 80, bar_y + 18, 0xE0E060);
 
         // Current weapon
         let wname = match self.player.weapon {
-            WP_SHOTGUN => "SHOTGUN",
-            WP_RIFLE => "RIFLE",
-            _ => "PISTOL",
+            WP_SHOTGUN => self.t(Msg::Shotgun),
+            WP_RIFLE => self.t(Msg::Rifle),
+            _ => self.t(Msg::Pistol),
         };
-        self.draw_text("WEAPON", 120, bar_y + 6, 0xC0A080);
-        self.draw_text(wname, 120, bar_y + 18, 0x80C0E0);
+        self.draw_text(self.t(Msg::Weapon), 120, bar_y + 6, 0xC0A080);
+        // Two rows of CJK need more room than the 12px between Latin rows.
+        let drop = if has_wide(wname) { 6 } else { 0 };
+        self.draw_text(wname, 120, bar_y + 18 + drop, 0x80C0E0);
 
         // Level + kills
         let alive = self.enemies[..self.level_enemy_count.max(0) as usize]
@@ -356,26 +470,28 @@ impl Game {
             .count() as i32;
         let kills = self.level_enemy_count - alive;
 
-        let buf = format!("LEVEL {}", self.level + 1);
+        let buf = trf(self.lang, Msg::Level, &[&(self.level + 1)]);
         self.draw_text(&buf, 20, SCREEN_H as i32 - 14, 0xE0C080);
 
-        let buf = format!("KILLS {}/{}", kills, self.level_enemy_count);
+        let buf = trf(self.lang, Msg::Kills, &[&kills, &self.level_enemy_count]);
         let kw = text_width(&buf);
         self.draw_text(&buf, SCREEN_W as i32 - kw - 20, SCREEN_H as i32 - 14, 0xC0A080);
     }
 
     pub fn draw_score_readout(&mut self) {
-        let buf = format!("SCORE {}", self.score);
+        let buf = trf(self.lang, Msg::Score, &[&self.score]);
         let w = text_width(&buf);
-        self.fill_rect(6, 6, w + 8, 14, 0x101010);
-        self.fill_rect(6, 6, w + 8, 1, 0x806020);
-        self.fill_rect(6, 19, w + 8, 1, 0x402010);
+        // CJK glyphs stand 4px taller each way, so the box grows to fit.
+        let pad = if has_wide(&buf) { 4 } else { 0 };
+        self.fill_rect(6, 6 - pad, w + 8, 14 + 2 * pad, 0x101010);
+        self.fill_rect(6, 6 - pad, w + 8, 1, 0x806020);
+        self.fill_rect(6, 19 + pad, w + 8, 1, 0x402010);
         self.draw_text(&buf, 10, 8, 0xFFE060);
     }
 
     pub fn draw_game_over_overlay(&mut self) {
         let is_victory = self.player.health > 0;
-        let title = if is_victory { "VICTORY" } else { "YOU DIED" };
+        let title = if is_victory { self.t(Msg::Victory) } else { self.t(Msg::YouDied) };
         let title_c = if is_victory { 0x40E0FF } else { 0xFF4040 };
 
         // Dim the play area, tint by outcome
@@ -402,25 +518,25 @@ impl Game {
         self.draw_text(title, (SCREEN_W as i32 - tw) / 2, y, title_c);
 
         y += 32;
-        let sbuf = format!("SCORE {}", self.score);
+        let sbuf = trf(self.lang, Msg::Score, &[&self.score]);
         self.draw_text(&sbuf, (SCREEN_W as i32 - text_width(&sbuf)) / 2, y, 0xFFE060);
 
         y += 16;
-        let kbuf = format!("SKILL {}", SKILL_NAMES[self.skill]);
+        let kbuf = trf(self.lang, Msg::SkillLine, &[&skill_name(self.lang, self.skill)]);
         let kc = SKILL_COLORS[self.skill];
         self.draw_text(&kbuf, (SCREEN_W as i32 - text_width(&kbuf)) / 2, y, kc);
 
         y += 22;
         if self.final_rank > 0 {
-            let rbuf = format!("NEW HIGH SCORE RANK {}", self.final_rank);
+            let rbuf = trf(self.lang, Msg::NewHighScore, &[&self.final_rank]);
             self.draw_text(&rbuf, (SCREEN_W as i32 - text_width(&rbuf)) / 2, y, 0x60FF60);
             y += 22;
         }
 
         y += 14;
         self.draw_text(
-            "HIGH SCORES",
-            (SCREEN_W as i32 - text_width("HIGH SCORES")) / 2,
+            self.t(Msg::HighScores),
+            (SCREEN_W as i32 - text_width(self.t(Msg::HighScores))) / 2,
             y,
             0xE0E0E0,
         );
@@ -436,8 +552,8 @@ impl Game {
         y += 20;
         if ((self.global_time * 2.0) as i32) & 1 != 0 {
             self.draw_text(
-                "PRESS R TO RESTART",
-                (SCREEN_W as i32 - text_width("PRESS R TO RESTART")) / 2,
+                self.t(Msg::PressRestart),
+                (SCREEN_W as i32 - text_width(self.t(Msg::PressRestart))) / 2,
                 y,
                 0x40E040,
             );
@@ -462,7 +578,8 @@ impl Game {
         let tx = (SCREEN_W as i32 - tw) / 2;
         self.fill_rect(0, y - 10, SCREEN_W as i32, 3, c);
         self.fill_rect(0, y + 12, SCREEN_W as i32, 3, c);
-        self.fill_rect(tx - 10, y - 5, tw + 20, 12, 0x101010);
+        let pad = if has_wide(text) { 4 } else { 0 };
+        self.fill_rect(tx - 10, y - 5 - pad, tw + 20, 12 + 2 * pad, 0x101010);
         self.draw_text(text, tx, y - 3, c);
     }
 
@@ -501,9 +618,20 @@ impl Game {
             y0 + 18,
             0xFFC040,
         );
+        // Top right: the language, named in its own script, and the key that
+        // cycles it.
+        let label = format!("{} ", self.t(Msg::Language));
+        let name = LANG_NAMES[self.lang];
+        let lw = text_width("L ") + text_width(&label) + text_width(name);
+        let mut lxp = x0 + w - 16 - lw;
+        self.draw_text("L", lxp, y0 + 18, 0x60C0FF);
+        lxp += text_width("L ");
+        self.draw_text(&label, lxp, y0 + 18, 0xC0C0C0);
+        self.draw_text_lang(name, lxp + text_width(&label), y0 + 18, 0xFFC040, self.lang);
+
         self.draw_text(
-            "CONTROLS",
-            x0 + (w - text_width("CONTROLS")) / 2,
+            self.t(Msg::Controls),
+            x0 + (w - text_width(self.t(Msg::Controls))) / 2,
             y0 + 42,
             0xE0E0E0,
         );
@@ -511,13 +639,13 @@ impl Game {
         let lx = x0 + 60;
         let mut ty = y0 + 64;
         for (key, action) in [
-            ("W S", "MOVE"),
-            ("A D", "STRAFE"),
-            ("ARROWS", "TURN"),
-            ("SPACE", "SHOOT"),
-            ("1 2 3", "WEAPON"),
-            ("R", "RESTART"),
-            ("ESC", "QUIT"),
+            ("W S", self.t(Msg::Move)),
+            ("A D", self.t(Msg::Strafe)),
+            (self.t(Msg::KeyArrows), self.t(Msg::Turn)),
+            (self.t(Msg::KeySpace), self.t(Msg::Shoot)),
+            ("1 2 3", self.t(Msg::Weapon)),
+            ("R", self.t(Msg::Restart)),
+            ("ESC", self.t(Msg::Quit)),
         ] {
             self.draw_text(key, lx, ty, 0x60C0FF);
             self.draw_text(action, lx + 160, ty, 0xC0C0C0);
@@ -536,8 +664,8 @@ impl Game {
         ty += 10;
 
         self.draw_text(
-            "HIGH SCORES",
-            x0 + (w - text_width("HIGH SCORES")) / 2,
+            self.t(Msg::HighScores),
+            x0 + (w - text_width(self.t(Msg::HighScores))) / 2,
             ty,
             0xFFC040,
         );
@@ -553,8 +681,8 @@ impl Game {
         // blinking prompt
         if ((self.global_time * 2.0) as i32) & 1 != 0 {
             self.draw_text(
-                "PRESS SPACE TO START",
-                x0 + (w - text_width("PRESS SPACE TO START")) / 2,
+                self.t(Msg::PressStart),
+                x0 + (w - text_width(self.t(Msg::PressStart))) / 2,
                 ty,
                 0x40E040,
             );
@@ -565,7 +693,8 @@ impl Game {
     /// in its gradient colour, with a knob on the selection and arrows that dim
     /// at the ends. Centred in the panel column `x0..x0+w`, top at `y`.
     fn draw_skill_slider(&mut self, x0: i32, w: i32, y: i32) {
-        self.draw_text("DIFFICULTY", x0 + (w - text_width("DIFFICULTY")) / 2, y, 0xE0E0E0);
+        let label = self.t(Msg::Difficulty);
+        self.draw_text(label, x0 + (w - text_width(label)) / 2, y, 0xE0E0E0);
 
         let seg_w = 48;
         let gap = 6;
@@ -601,10 +730,10 @@ impl Game {
             self.fill_rect(bx + bar_w + 17 - k, ay - k, 1, 2 * k + 1, rc);
         }
 
-        let name = SKILL_NAMES[self.skill];
+        let name = skill_name(self.lang, self.skill);
         let nc = SKILL_COLORS[self.skill];
         self.draw_text(name, x0 + (w - text_width(name)) / 2, by + 18, nc);
-        let hint = "LEFT RIGHT TO CHANGE";
+        let hint = self.t(Msg::ChangeHint);
         self.draw_text(hint, x0 + (w - text_width(hint)) / 2, by + 34, 0x807060);
     }
 
