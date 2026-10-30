@@ -363,7 +363,7 @@ impl Game {
             && self.all_enemies_dead()
             && (self.level as usize + 1) < LEVEL_COUNT
         {
-            self.draw_banner("LEVEL CLEAR", 60, 0x40FF40);
+            self.draw_banner(crate::i18n::tr(self.lang, crate::i18n::Msg::LevelClear), 60, 0x40FF40);
         }
 
         if self.show_intro {

@@ -33,6 +33,8 @@ pub struct Game {
     pub hazard_snd_t: f64,
     /// Difficulty, `SKILL_*` (see difficulty.rs). Survives restarts.
     pub skill: usize,
+    /// Display language, `LANG_*` (see i18n.rs). Survives restarts.
+    pub lang: usize,
 
     pub player: Player,
     pub enemies: [Enemy; MAX_ENEMIES],
@@ -89,6 +91,7 @@ impl Game {
             hazard_burn: 0.0,
             hazard_snd_t: 0.0,
             skill: SKILL_NORMAL,
+            lang: crate::i18n::LANG_EN,
             player: Player::default(),
             enemies: [Enemy::default(); MAX_ENEMIES],
             fireballs: [Fireball::default(); MAX_FIREBALLS],

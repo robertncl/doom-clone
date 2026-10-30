@@ -20,6 +20,7 @@ mod difficulty_tests;
 mod entity_tests;
 mod game_tests;
 mod hud_tests;
+mod i18n_tests;
 mod level_tests;
 mod main_tests;
 mod playthrough_tests;

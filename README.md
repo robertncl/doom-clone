@@ -19,6 +19,7 @@ and `--headless` modes exit cleanly.
 | `Space` | Shoot |
 | `1` / `2` / `3` | Select pistol / shotgun / rifle (if owned) |
 | `R` | Restart (after death) |
+| `L` | Switch language (English, French, German, Japanese, Chinese) |
 | `Esc` | Quit |
 
 On the title screen, Left / Right (or `A` / `D`) move the **difficulty slider**
@@ -64,6 +65,29 @@ shows it. The numbers live in `src/difficulty.rs`.
 - Built-in AI bot (`--bot`) that pathfinds, fights, grabs guns, and routes
   around lava
 - Self-test mode (`--selftest`) that validates level geometry and reachability
+
+## Languages
+
+The game is playable in English, French, German, Japanese and Chinese. Press
+`L` at any time to cycle languages, or start with `--lang en|fr|de|ja|zh`.
+Without the flag it follows `DOOM_LANG`, then your locale (`LC_ALL`,
+`LC_MESSAGES`, `LANG`), and otherwise English. All text lives in
+`src/i18n.rs`.
+
+French and German accents are drawn as marks over the game's own pixel font.
+Japanese and Chinese use 16×16 glyphs from [GNU Unifont](https://unifoundry.com/unifont/)
+17.0.05, embedded in `src/cjk_glyphs.rs`. Only the characters the game uses
+are included, and Japanese text uses Unifont's Japanese glyph forms. The
+glyphs are used under the SIL Open Font License 1.1; see
+`assets/fonts/UNIFONT-OFL.txt`. After changing any Japanese or Chinese text,
+regenerate the table:
+
+```sh
+# from https://ftp.gnu.org/gnu/unifont/unifont-17.0.05/ (check the .sig files)
+python3 tools/gen_cjk_glyphs.py unifont_all-17.0.05.hex.gz unifont_jp-17.0.05.bdf.gz
+```
+
+A test fails if a translation uses a character the table lacks.
 
 ## Graphics and levels
 
@@ -145,6 +169,7 @@ Notes:
 | `--shot-pos X,Y` | Put the `--shot` camera at a map position instead of the spawn. |
 | `--shot-angle DEG` | Face the `--shot` camera in a given direction. |
 | `--skill S` | Preset the difficulty slider: `1`-`5` or a name (`hard`, `nightmare`, …). |
+| `--lang L` | Display language: `en`, `fr`, `de`, `ja` or `zh` (a locale such as `de_DE.UTF-8` also works). |
 | `--bench` | Render fixed views of every level plus close-range enemies and print median frame times per stage (`--frames N` sets the repetitions). |
 
 ### Bot (AI player)

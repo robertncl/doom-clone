@@ -1,24 +1,28 @@
 //! DOOM-style raycasting FPS written in Rust.
 //!
 //! Controls: W/Up move, S/Down back, A/D strafe, Left/Right turn, Space shoot,
-//! R restart (after death), Esc quit.
+//! R restart (after death), L language, Esc quit.
 //!
 //! Flags: `--headless` (no window, fixed timestep), `--frames N` (stop after N),
 //! `--bot` (AI plays), `--selftest` (validate levels and exit 0/1),
 //! `--shot PATH` (dump one frame as a PPM) with `--shot-level N`,
 //! `--shot-pos X,Y` and `--shot-angle DEG` to aim the camera, `--skill N`
 //! (1-5 or BABY/EASY/NORMAL/HARD/NIGHTMARE) to preset the difficulty slider.
+//! `--lang en|fr|de|ja|zh` picks the display language (default: `DOOM_LANG`,
+//! then the locale); L cycles it in game.
 #![allow(dead_code)]
 
 mod audio;
 mod bench;
 mod bot;
+mod cjk_glyphs;
 mod color;
 mod constants;
 mod difficulty;
 mod entity;
 mod game;
 mod hud;
+mod i18n;
 mod level;
 mod lighting;
 mod render;
@@ -49,6 +53,7 @@ const KEYMAP: &[(usize, &[Key])] = &[
     (K_WEAPON1, &[Key::Key1]),
     (K_WEAPON2, &[Key::Key2]),
     (K_WEAPON3, &[Key::Key3]),
+    (K_LANG, &[Key::L]),
 ];
 
 /// Everything the command line can set. Parsed out of `main` so the flag
@@ -68,6 +73,8 @@ struct Args {
     shot_angle: Option<f64>,
     /// Starting skill (`SKILL_*`); `None` leaves the slider on NORMAL.
     skill: Option<usize>,
+    /// Display language (`LANG_*`); `None` follows the environment.
+    lang: Option<usize>,
 }
 
 impl Default for Args {
@@ -83,6 +90,7 @@ impl Default for Args {
             shot_pos: None,
             shot_angle: None,
             skill: None,
+            lang: None,
         }
     }
 }
@@ -136,6 +144,11 @@ fn parse_args(argv: &[String]) -> Args {
                     a.shot_angle = v.parse::<f64>().ok().map(|d| d.to_radians());
                 }
             }
+            "--lang" => {
+                if let Some(v) = value(&mut i) {
+                    a.lang = i18n::parse_lang(v);
+                }
+            }
             "--skill" => {
                 if let Some(v) = value(&mut i) {
                     a.skill = difficulty::parse_skill(v);
@@ -168,6 +181,7 @@ fn shot_game(args: &Args) -> Game {
     if let Some(s) = args.skill {
         g.set_skill(s);
     }
+    g.lang = args.lang.unwrap_or(i18n::LANG_EN);
     g.show_intro = false;
     g
 }
@@ -203,6 +217,8 @@ fn run(args: &Args) -> i32 {
     if let Some(s) = args.skill {
         g.set_skill(s);
     }
+    // An explicit --lang wins; otherwise follow DOOM_LANG or the locale.
+    g.lang = args.lang.or_else(i18n::lang_from_env).unwrap_or(i18n::LANG_EN);
 
     let frames = if args.headless {
         run_headless(&mut g, args.bot, args.max_frames)

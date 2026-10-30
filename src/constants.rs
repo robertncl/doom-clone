@@ -43,7 +43,8 @@ pub const K_QUIT: usize = 8;
 pub const K_WEAPON1: usize = 9; // select pistol
 pub const K_WEAPON2: usize = 10; // select shotgun
 pub const K_WEAPON3: usize = 11; // select rifle
-pub const K_COUNT: usize = 12;
+pub const K_LANG: usize = 12; // cycle the display language
+pub const K_COUNT: usize = 13;
 
 // Wall kinds (old `WALL_*` enum). Index 0 = none (empty space).
 pub const WALL_NONE: usize = 0;
