@@ -22,10 +22,41 @@ use crate::constants::*;
 use crate::theme::*;
 use std::sync::OnceLock;
 
-/// One square texture. A fixed-size array (not a `Vec`) so the sampler's
-/// mask-derived indices are provably in bounds and the bounds checks compile
-/// away in the hot wall/floor loops.
-pub type Tex = [u32; TEX_SIZE * TEX_SIZE];
+/// One square texture as a mip chain: `levels[0]` is `TEX_SIZE` texels a
+/// side, and each further level is a 2x2 box filter of the one before. The
+/// renderer picks the level whose texels are closest to one screen pixel, so
+/// distant surfaces are averaged instead of shimmering (and stay in cache).
+pub struct MipTex {
+    pub levels: Vec<Box<[u32]>>,
+}
+
+impl MipTex {
+    /// Build the chain from a full-size texture. Emission is averaged with
+    /// the colour, so a distant torch still glows.
+    pub fn from_base(base: Vec<u32>) -> MipTex {
+        assert_eq!(base.len(), TEX_SIZE * TEX_SIZE, "texture buffer size mismatch");
+        let mut levels: Vec<Box<[u32]>> = vec![base.into_boxed_slice()];
+        for l in 1..TEX_MIPS {
+            let (src, ss) = (&levels[l - 1], TEX_SIZE >> (l - 1));
+            let ds = ss / 2;
+            let mut out = vec![0u32; ds * ds];
+            for y in 0..ds {
+                for x in 0..ds {
+                    let px = [src[2 * y * ss + 2 * x], src[2 * y * ss + 2 * x + 1], src[(2 * y + 1) * ss + 2 * x], src[(2 * y + 1) * ss + 2 * x + 1]];
+                    let avg = |s: u32| (px.iter().map(|p| (p >> s) & 0xFF).sum::<u32>() + 2) / 4;
+                    out[y * ds + x] = (avg(24) << 24) | (avg(16) << 16) | (avg(8) << 8) | avg(0);
+                }
+            }
+            levels.push(out.into_boxed_slice());
+        }
+        MipTex { levels }
+    }
+
+    /// log2 of level `l`'s side length.
+    pub fn bits(l: usize) -> u32 {
+        TEX_SIZE.trailing_zeros() - l as u32
+    }
+}
 
 /// Variants every wall material comes in. A wall face picks one per level from
 /// a hash of its position (see `lighting.rs`), so long runs of the same wall
@@ -49,14 +80,14 @@ pub type SkyTex = [u32; SKY_W * SKY_H];
 pub struct Textures {
     /// `wall[kind][variant]`. Index 0 (`WALL_NONE`) is a copy of stone so
     /// `wall[wall_type]` indexes directly.
-    pub wall: Vec<[Box<Tex>; WALL_VARIANTS]>,
+    pub wall: Vec<[MipTex; WALL_VARIANTS]>,
     /// Floors and ceilings, indexed by the `FLAT_*` constants.
-    pub flats: Vec<Box<Tex>>,
+    pub flats: Vec<MipTex>,
 }
 
-/// Freeze a build-time buffer into a fixed-size texture.
-fn to_tex(v: Vec<u32>) -> Box<Tex> {
-    v.into_boxed_slice().try_into().expect("texture buffer size mismatch")
+/// Freeze a build-time buffer into a mipmapped texture.
+fn to_tex(v: Vec<u32>) -> MipTex {
+    MipTex::from_base(v)
 }
 
 // ---- noise ----
@@ -1190,7 +1221,7 @@ impl Textures {
     }
 
     pub fn build() -> Textures {
-        let s = TEX_SIZE as i32 / 64; // resolution scale: 1 at 64, 2 at 128
+        let s = TEX_SIZE as i32 / 64; // resolution scale: 1 at 64, 4 at 256
         let base: [fn(i32, i32, i32) -> u32; WALL_KIND_MAX] =
             [wall_stone, wall_stone, wall_brick, wall_metal, wall_wood, wall_hell, wall_tech];
         let light: [fn(f64, f64, u32) -> u32; WALL_KIND_MAX] =
@@ -1203,10 +1234,9 @@ impl Textures {
             let b = gen(|u, v| base[kind](u, v, s));
             let d = overlay(&b, detail[kind]);
             let l = overlay(&b, light[kind]);
-            let w = {
-                let sc = TEX_SIZE as f64 / 64.0;
-                overlay(&b, |du, dv, c| worn(kind, du, dv, c, (du * sc) as i32, (dv * sc) as i32))
-            };
+            // Wear and patches take noise coordinates on a fixed 128 grid, so
+            // their blotches keep the same size whatever `TEX_SIZE` is.
+            let w = overlay(&b, |du, dv, c| worn(kind, du, dv, c, (du * 2.0) as i32, (dv * 2.0) as i32));
             wall.push([to_tex(b), to_tex(d), to_tex(l), to_tex(w)]);
         }
 
@@ -1216,8 +1246,7 @@ impl Textures {
         let plate = gen(|u, v| flat_plate(u, v, s));
         let hellrock = gen(|u, v| flat_hellrock(u, v, s));
         let ceil_panel = gen(|u, v| flat_ceil_panel(u, v, s));
-        let sc = TEX_SIZE as f64 / 64.0;
-        let tex_uv = move |du: f64, dv: f64| ((du * sc) as i32, (dv * sc) as i32);
+        let tex_uv = move |du: f64, dv: f64| ((du * 2.0) as i32, (dv * 2.0) as i32);
 
         let mut flats: Vec<Option<Vec<u32>>> = vec![None; FLAT_COUNT];
         flats[FLAT_TILE_CRACKED] = Some(overlay(&tile, |du, dv, c| {

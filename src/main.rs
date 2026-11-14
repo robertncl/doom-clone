@@ -9,7 +9,9 @@
 //! `--shot-pos X,Y` and `--shot-angle DEG` to aim the camera, `--skill N`
 //! (1-5 or BABY/EASY/NORMAL/HARD/NIGHTMARE) to preset the difficulty slider.
 //! `--lang en|fr|de|ja|zh` picks the display language (default: `DOOM_LANG`,
-//! then the locale); L cycles it in game.
+//! then the locale); L cycles it in game. `--scale N` sets the render
+//! resolution (N x 640x400; the window defaults to 2) and `--threads N` the
+//! render threads. `--bench` times the renderer.
 #![allow(dead_code)]
 
 mod audio;
@@ -75,6 +77,12 @@ struct Args {
     skill: Option<usize>,
     /// Display language (`LANG_*`); `None` follows the environment.
     lang: Option<usize>,
+    /// Render scale (framebuffer = 640x400 times this); `None` picks 2 for
+    /// the window and 1 for headless runs and shots.
+    scale: Option<usize>,
+    /// Render threads; `None` uses the machine's cores in the window (up to
+    /// 8) and one thread headless.
+    threads: Option<usize>,
 }
 
 impl Default for Args {
@@ -91,6 +99,8 @@ impl Default for Args {
             shot_angle: None,
             skill: None,
             lang: None,
+            scale: None,
+            threads: None,
         }
     }
 }
@@ -144,6 +154,16 @@ fn parse_args(argv: &[String]) -> Args {
                     a.shot_angle = v.parse::<f64>().ok().map(|d| d.to_radians());
                 }
             }
+            "--scale" => {
+                if let Some(v) = value(&mut i) {
+                    a.scale = v.parse().ok().filter(|s| (1..=MAX_SCALE).contains(s));
+                }
+            }
+            "--threads" => {
+                if let Some(v) = value(&mut i) {
+                    a.threads = v.parse().ok().filter(|&t: &usize| t >= 1);
+                }
+            }
             "--lang" => {
                 if let Some(v) = value(&mut i) {
                     a.lang = i18n::parse_lang(v);
@@ -164,6 +184,8 @@ fn parse_args(argv: &[String]) -> Args {
 /// Build the one-frame game state a `--shot` run renders.
 fn shot_game(args: &Args) -> Game {
     let mut g = Game::new();
+    g.set_scale(args.scale.unwrap_or(1));
+    g.threads = args.threads.unwrap_or(1);
     g.load_high_scores();
     g.reset_game();
     if args.shot_level > 0 {
@@ -195,18 +217,22 @@ fn run(args: &Args) -> i32 {
     }
     if args.bench {
         let reps = if args.max_frames > 0 { args.max_frames as usize } else { 30 };
-        return bench::run_bench(reps);
+        return bench::run_bench(reps, args.threads.unwrap_or_else(default_threads));
     }
 
     // Render a single frame of one level to a PPM and exit (renderer check).
     if let Some(path) = &args.shot {
         let mut g = shot_game(args);
         g.render_frame();
-        write_ppm(path, &g.pixels);
+        write_ppm(path, &g.pixels, g.fb_w, g.fb_h);
         return 0;
     }
 
     let mut g = Game::new();
+    // The window renders at 2x (1280x800) on every core by default; headless
+    // runs stay at 1x on one thread, which keeps them cheap and comparable.
+    g.set_scale(args.scale.unwrap_or(if args.headless { 1 } else { 2 }));
+    g.threads = args.threads.unwrap_or(if args.headless { 1 } else { default_threads() });
     g.load_high_scores();
     // Audio only makes sense for the interactive window; headless/bot test runs
     // skip it (no point spawning a PCM player, and it keeps them deterministic).
@@ -244,10 +270,16 @@ fn main() {
     std::process::exit(run(&parse_args(&argv)));
 }
 
-/// Dump the 0RGB framebuffer as a binary PPM (P6) for offline inspection.
-fn write_ppm(path: &str, pixels: &[u32]) {
-    let mut buf = Vec::with_capacity(SCREEN_W * SCREEN_H * 3 + 32);
-    buf.extend_from_slice(format!("P6\n{} {}\n255\n", SCREEN_W, SCREEN_H).as_bytes());
+/// Render threads to use when none are asked for: the machine's cores, up
+/// to 8 (past that the bands are too small to be worth another thread).
+fn default_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get()).min(8)
+}
+
+/// Dump a `w`x`h` 0RGB framebuffer as a binary PPM (P6) for offline inspection.
+fn write_ppm(path: &str, pixels: &[u32], w: usize, h: usize) {
+    let mut buf = Vec::with_capacity(w * h * 3 + 32);
+    buf.extend_from_slice(format!("P6\n{} {}\n255\n", w, h).as_bytes());
     for &px in pixels {
         buf.push(((px >> 16) & 0xFF) as u8);
         buf.push(((px >> 8) & 0xFF) as u8);
@@ -328,12 +360,15 @@ fn apply_input(g: &mut Game, down: &[bool; K_COUNT], prev_down: &mut [bool; K_CO
 
 /// Windowed loop via minifb (handles the 2x upscale + present).
 fn run_windowed(g: &mut Game, bot: bool, max_frames: i64) -> u64 {
+    // At 1x the 640x400 frame is doubled by minifb to fill the usual window;
+    // above that the frame is already window-sized and shown 1:1.
+    let (win_scale, win_w, win_h) = if g.scale == 1 { (Scale::X2, SCREEN_W, SCREEN_H) } else { (Scale::X1, g.fb_w, g.fb_h) };
     let mut window = Window::new(
         "Doom Clone",
-        SCREEN_W,
-        SCREEN_H,
+        win_w,
+        win_h,
         WindowOptions {
-            scale: Scale::X2,
+            scale: win_scale,
             ..WindowOptions::default()
         },
     )
@@ -366,7 +401,7 @@ fn run_windowed(g: &mut Game, bot: bool, max_frames: i64) -> u64 {
         g.audio.tick(dt);
 
         window
-            .update_with_buffer(&g.pixels, SCREEN_W, SCREEN_H)
+            .update_with_buffer(&g.pixels, g.fb_w, g.fb_h)
             .unwrap();
 
         frames += 1;

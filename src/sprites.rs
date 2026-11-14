@@ -12,6 +12,7 @@ use crate::color::{blend4, make_color, shade_color, Lit, FP_BITS, FP_ONE};
 use crate::constants::*;
 use crate::game::Game;
 use crate::lighting::{Decor, MAX_DECOR};
+use crate::render::View;
 use crate::theme::*;
 use crate::types::{Barrel, Enemy, Fireball, Pickup};
 use std::sync::OnceLock;
@@ -985,11 +986,11 @@ fn pillar_pixel(u: f64, v: f64) -> Option<u32> {
 // ---- the sprite bank: every sprite pre-rendered once ----
 
 /// Raster size of a cached sprite.
-pub const SPR: usize = 128;
-/// Mip levels: 128, 64, 32 and 16 texels.
-const MIPS: usize = 4;
-/// Supersamples per texel axis when rasterising (3x3 per texel).
-const SS: usize = 3;
+pub const SPR: usize = 256;
+/// Mip levels: 256, 128, 64, 32 and 16 texels.
+pub(crate) const MIPS: usize = 5;
+/// Supersamples per texel axis when rasterising (2x2 per texel).
+const SS: usize = 2;
 /// Animation frames for flame decorations, over one 2π cycle.
 const FLAME_FRAMES: usize = 8;
 
@@ -1172,10 +1173,143 @@ pub(crate) fn bank() -> &'static SpriteBank {
 /// a silhouette you can shoot.
 const MIN_SPRITE_LIGHT: i32 = 96;
 
+/// One thing to draw over the walls and floor, in framebuffer pixels. The
+/// frame's items are listed far to near once, then every band draws the part
+/// of each that falls in its rows.
+pub enum Item {
+    /// A soft dark ellipse on the floor under a sprite.
+    Shadow { sx: f64, feet: i32, rx: f64, ry: f64, depth: f64 },
+    /// A cached sprite raster (one mip level) stretched over a screen box.
+    Blit { tex: &'static [u32], size: usize, dsx: i32, dsy: i32, w: i32, h: i32, depth: f64, lit: Lit, flash: bool, alpha: u32 },
+    /// A fireball: a hot core inside an additive halo.
+    Glow { cx: f64, cy: f64, core: f64, halo: f64, depth: f64 },
+    /// A particle: a filled disc.
+    Dot { sx: i32, sy: i32, r: i32, color: u32 },
+}
+
+impl Item {
+    /// Draw the rows of this item that fall inside `y0..y1` into `band`
+    /// (which starts at row `y0`). Columns nearer in the wall depth buffer
+    /// occlude it.
+    pub(crate) fn draw(&self, v: &View, band: &mut [u32], y0: i32, y1: i32) {
+        let fw = v.w as i32;
+        match *self {
+            Item::Shadow { sx, feet, rx, ry, depth } => {
+                let xa = ((sx - rx).floor() as i32).max(0);
+                let xb = ((sx + rx).ceil() as i32).min(fw);
+                // Floor rows only, and only below each column's wall.
+                let ya = ((feet as f64 - ry).floor() as i32).max(v.h as i32 / 2 + 1).max(y0);
+                let yb = ((feet as f64 + ry).ceil() as i32).min(y1);
+                for x in xa..xb {
+                    if depth >= v.depth[x as usize] {
+                        continue;
+                    }
+                    let nx = (x as f64 + 0.5 - sx) / rx;
+                    for y in ya.max(v.bot[x as usize] + 1)..yb {
+                        let ny = (y as f64 + 0.5 - feet as f64) / ry;
+                        let d = nx * nx + ny * ny;
+                        if d >= 1.0 {
+                            continue;
+                        }
+                        let keep = (256.0 * (1.0 - 0.5 * (1.0 - d) * (1.0 - d))) as u32;
+                        let idx = (y - y0) as usize * v.w + x as usize;
+                        let c = band[idx];
+                        let ch = |s: u32| ((((c >> s) & 0xFF) * keep) >> 8) << s;
+                        band[idx] = ch(16) | ch(8) | ch(0);
+                    }
+                }
+            }
+            Item::Blit { tex, size, dsx, dsy, w, h, depth, lit, flash, alpha } => {
+                let (xa, xb) = (dsx.max(0), (dsx + w).min(fw));
+                let (ya, yb) = (dsy.max(y0), (dsy + h).min(y1));
+                if xa >= xb || ya >= yb {
+                    return;
+                }
+                let last = size as i64 - 1;
+                let (su, sv) = (size as f64 / w as f64, size as f64 / h as f64);
+                let dv = (sv * FP_ONE as f64) as i64;
+                let v_start = ((((ya - dsy) as f64 + 0.5) * sv - 0.5) * FP_ONE as f64).floor() as i64;
+                for x in xa..xb {
+                    if depth >= v.depth[x as usize] {
+                        continue;
+                    }
+                    let u = ((((x - dsx) as f64 + 0.5) * su - 0.5) * FP_ONE as f64).floor() as i64;
+                    let tu = u >> FP_BITS;
+                    let wu = ((u >> (FP_BITS - 8)) & 0xFF) as u32;
+                    let (x0, x1) = (tu.clamp(0, last) as usize, (tu + 1).clamp(0, last) as usize);
+                    let mut tv_fp = v_start;
+                    let mut idx = (ya - y0) as usize * v.w + x as usize;
+                    for _ in ya..yb {
+                        let tv = tv_fp >> FP_BITS;
+                        let wv = ((tv_fp >> (FP_BITS - 8)) & 0xFF) as u32;
+                        tv_fp += dv;
+                        let (r0, r1) = (tv.clamp(0, last) as usize * size, (tv + 1).clamp(0, last) as usize * size);
+                        let t = blend4(tex[r0 + x0], tex[r0 + x1], tex[r1 + x0], tex[r1 + x1], wu, wv);
+                        if t[0] == 0 {
+                            idx += v.w;
+                            continue;
+                        }
+                        // Premultiplied source over the frame, by coverage.
+                        let a = ((t[0] * alpha) >> 8).min(255);
+                        let src = if flash {
+                            [a, a * 240 / 255, a * 240 / 255]
+                        } else {
+                            std::array::from_fn(|c| ((((t[c + 1] * lit.k[c]) >> 8) * alpha) >> 8) + ((a * lit.add[c]) >> 8))
+                        };
+                        let keep = 255 - a;
+                        let keep = keep + (keep >> 7); // 0..=256
+                        let dst = band[idx];
+                        let mix = |s: u32, sh: u32| (s + ((((dst >> sh) & 0xFF) * keep) >> 8)).min(255);
+                        band[idx] = (mix(src[0], 16) << 16) | (mix(src[1], 8) << 8) | mix(src[2], 0);
+                        idx += v.w;
+                    }
+                }
+            }
+            Item::Glow { cx, cy, core, halo, depth } => {
+                let xa = ((cx - halo) as i32).max(0);
+                let xb = ((cx + halo) as i32 + 1).min(fw);
+                let ya = ((cy - halo) as i32).max(y0);
+                let yb = ((cy + halo) as i32 + 1).min(y1);
+                for x in xa..xb {
+                    if depth >= v.depth[x as usize] {
+                        continue;
+                    }
+                    for y in ya..yb {
+                        let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+                        let d = (dx * dx + dy * dy).sqrt();
+                        let idx = (y - y0) as usize * v.w + x as usize;
+                        if d < core {
+                            // Hot core, white-yellow in the middle.
+                            let t = (d / core).powi(2);
+                            band[idx] = make_color((255.0 * (1.0 - t * 0.3)) as i32, (220.0 * (1.0 - t * 0.75)) as i32, (120.0 * (1.0 - t)) as i32);
+                        } else if d < halo {
+                            // Additive glow around it.
+                            let g = (1.0 - (d - core) / (halo - core)).powi(2);
+                            let c = band[idx];
+                            let add = |s: u32, a: f64| ((((c >> s) & 0xFF) as f64 + a * g) as u32).min(255) << s;
+                            band[idx] = add(16, 170.0) | add(8, 70.0) | add(0, 14.0);
+                        }
+                    }
+                }
+            }
+            Item::Dot { sx, sy, r, color } => {
+                for y in (sy - r).max(y0)..(sy + r + 1).min(y1) {
+                    for x in (sx - r).max(0)..(sx + r + 1).min(fw) {
+                        if (x - sx) * (x - sx) + (y - sy) * (y - sy) <= r * r {
+                            band[(y - y0) as usize * v.w + x as usize] = color;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl Game {
-    /// Camera-space projection of a world point: `(screen_x, depth, base_h)`,
-    /// where `base_h` is the height of a full wall at that depth. `None` when
-    /// the point is behind (or practically at) the camera.
+    /// Camera-space projection of a world point: `(screen_x, depth, base_h)`
+    /// in framebuffer pixels, where `base_h` is the height of a full wall at
+    /// that depth. `None` when the point is behind (or practically at) the
+    /// camera.
     pub(crate) fn project(&self, x: f64, y: f64) -> Option<(f64, f64, i32)> {
         let (px, py, ang) = (self.player.x, self.player.y, self.player.angle);
         let (dx, dy) = (x - px, y - py);
@@ -1186,196 +1320,91 @@ impl Game {
             return None;
         }
         let plane_half = (FOV / 2.0).tan();
-        let screen_x = (SCREEN_W as f64 / 2.0) * (1.0 + ty / (tx * plane_half));
-        Some((screen_x, tx, (SCREEN_H as f64 / tx) as i32))
+        let screen_x = (self.fb_w as f64 / 2.0) * (1.0 + ty / (tx * plane_half));
+        Some((screen_x, tx, (self.fb_h as f64 / tx) as i32))
     }
 
     /// Lighting for a sprite standing at `(x, y)`, `depth` from the camera.
     fn sprite_lit(&self, x: f64, y: f64, depth: f64) -> Lit {
         let light = self.env.light_at(x, y).map(|c| c.max(MIN_SPRITE_LIGHT));
-        self.lit_for(light, self.fog_visibility(depth), 1.0)
+        self.env.lit(light, self.env.fog_vis(depth), 1.0)
     }
 
-    /// Composite a cached sprite into the `w`×`h` screen box at `(dsx, dsy)`:
-    /// pick the mip closest to (but not below) the on-screen size, sample it
-    /// bilinearly, light and fog it, and blend by coverage scaled by `alpha`
-    /// (0..=256; the wraith is see-through). `flash` draws it white instead
-    /// (the hit flash). Columns nearer in the wall depth buffer occlude it.
+    /// A blit of `r` over the `w`×`h` box at `(dsx, dsy)`, using the smallest
+    /// mip that is still at least as big as the box.
     #[allow(clippy::too_many_arguments)]
-    fn draw_raster(&mut self, r: &Raster, dsx: i32, dsy: i32, w: i32, h: i32, depth: f64, lit: &Lit, flash: bool, alpha: u32) {
-        if w <= 0 || h <= 0 {
-            return;
-        }
-        let (sx0, sx1) = (dsx.max(0), (dsx + w).min(SCREEN_W as i32));
-        let (sy0, sy1) = (dsy.max(0), (dsy + h).min(SCREEN_H as i32));
-        if sx0 >= sx1 || sy0 >= sy1 {
-            return;
+    fn blit(&self, r: &'static Raster, dsx: i32, dsy: i32, w: i32, h: i32, depth: f64, lit: Lit, flash: bool, alpha: u32) -> Option<Item> {
+        if w <= 0 || h <= 0 || dsx >= self.fb_w as i32 || dsx + w <= 0 {
+            return None;
         }
         let mut level = 0;
         while level + 1 < MIPS && (SPR >> (level + 1)) as i32 >= w.max(h) {
             level += 1;
         }
-        let size = SPR >> level;
-        let tex = &r.levels[level];
-        let last = size as i64 - 1;
-        let (su, sv) = (size as f64 / w as f64, size as f64 / h as f64);
-        let dv = (sv * FP_ONE as f64) as i64;
-        let v_start = ((((sy0 - dsy) as f64 + 0.5) * sv - 0.5) * FP_ONE as f64).floor() as i64;
-        for x in sx0..sx1 {
-            if depth >= self.depth[x as usize] {
-                continue;
-            }
-            let u = ((((x - dsx) as f64 + 0.5) * su - 0.5) * FP_ONE as f64).floor() as i64;
-            let tu = u >> FP_BITS;
-            let wu = ((u >> (FP_BITS - 8)) & 0xFF) as u32;
-            let (x0, x1) = (tu.clamp(0, last) as usize, (tu + 1).clamp(0, last) as usize);
-            let mut v = v_start;
-            let mut idx = sy0 as usize * SCREEN_W + x as usize;
-            for _ in sy0..sy1 {
-                let tv = v >> FP_BITS;
-                let wv = ((v >> (FP_BITS - 8)) & 0xFF) as u32;
-                v += dv;
-                let (r0, r1) = (tv.clamp(0, last) as usize * size, (tv + 1).clamp(0, last) as usize * size);
-                let t = blend4(tex[r0 + x0], tex[r0 + x1], tex[r1 + x0], tex[r1 + x1], wu, wv);
-                if t[0] == 0 {
-                    idx += SCREEN_W;
-                    continue;
-                }
-                let a = ((t[0] * alpha) >> 8).min(255);
-                let src = if flash {
-                    [a, a * 240 / 255, a * 240 / 255]
-                } else {
-                    std::array::from_fn(|c| ((((t[c + 1] * lit.k[c]) >> 8) * alpha) >> 8) + ((a * lit.add[c]) >> 8))
-                };
-                let keep = 255 - a;
-                let keep = keep + (keep >> 7); // 0..=256
-                let dst = self.pixels[idx];
-                let mix = |s: u32, sh: u32| (s + ((((dst >> sh) & 0xFF) * keep) >> 8)).min(255);
-                self.pixels[idx] = (mix(src[0], 16) << 16) | (mix(src[1], 8) << 8) | mix(src[2], 0);
-                idx += SCREEN_W;
-            }
-        }
+        Some(Item::Blit { tex: &r.levels[level], size: SPR >> level, dsx, dsy, w, h, depth, lit, flash, alpha })
     }
 
-    /// A soft dark ellipse on the floor under a sprite, `half_w` wide each
-    /// side of `sx`, centred on the floor line `feet`. Only floor pixels in
-    /// front of the walls take it.
-    fn draw_shadow(&mut self, sx: f64, feet: i32, half_w: f64, depth: f64) {
-        let rx = half_w.max(1.0);
-        let ry = (half_w * 0.22).max(1.5);
-        let x0 = ((sx - rx).floor() as i32).max(0);
-        let x1 = ((sx + rx).ceil() as i32).min(SCREEN_W as i32);
-        let y0 = ((feet as f64 - ry).floor() as i32).max(SCREEN_H as i32 / 2 + 1);
-        let y1 = ((feet as f64 + ry).ceil() as i32).min(SCREEN_H as i32);
-        for x in x0..x1 {
-            if depth >= self.depth[x as usize] {
-                continue;
-            }
-            let nx = (x as f64 + 0.5 - sx) / rx;
-            for y in y0.max(self.wall_bot[x as usize] + 1)..y1 {
-                let ny = (y as f64 + 0.5 - feet as f64) / ry;
-                let d = nx * nx + ny * ny;
-                if d >= 1.0 {
-                    continue;
-                }
-                let keep = (256.0 * (1.0 - 0.5 * (1.0 - d) * (1.0 - d))) as u32;
-                let idx = y as usize * SCREEN_W + x as usize;
-                let c = self.pixels[idx];
-                let ch = |s: u32| ((((c >> s) & 0xFF) * keep) >> 8) << s;
-                self.pixels[idx] = ch(16) | ch(8) | ch(0);
-            }
-        }
+    fn shadow(&self, sx: f64, feet: i32, half_w: f64, depth: f64) -> Item {
+        Item::Shadow { sx, feet, rx: half_w.max(1.0), ry: (half_w * 0.22).max(1.5), depth }
     }
 
-    fn draw_enemy(&mut self, e: Enemy) {
+    fn enemy_items(&self, e: Enemy, out: &mut Vec<Item>) {
         let Some((screen_x, tx, base_h)) = self.project(e.x, e.y) else {
             return;
         };
         // Kinds differ in bulk, but they all stand on the same floor: scale the
         // billboard about its feet so a baron towers instead of sinking.
-        let sprite_h = (base_h as f64 * EN_SCALE[e.kind as usize]) as i32;
-        let sprite_w = sprite_h;
-        let feet = SCREEN_H as i32 / 2 + base_h / 2;
-        let dsx = (screen_x - sprite_w as f64 / 2.0) as i32;
-        let dsy = feet - sprite_h;
-
-        self.draw_shadow(screen_x, feet, sprite_w as f64 * 0.26, tx);
-        let lit = self.sprite_lit(e.x, e.y, tx);
+        let size = (base_h as f64 * EN_SCALE[e.kind as usize]) as i32;
+        let feet = self.fb_h as i32 / 2 + base_h / 2;
+        let dsx = (screen_x - size as f64 / 2.0) as i32;
+        out.push(self.shadow(screen_x, feet, size as f64 * 0.26, tx));
         let alpha = if e.kind == EN_WRAITH { 184 } else { 256 };
         let (period, frames) = ENEMY_ANIM[e.kind as usize];
         let raster = &bank().enemies[e.kind as usize][anim_frame(period, frames, e.anim)];
-        self.draw_raster(raster, dsx, dsy, sprite_w, sprite_h, tx, &lit, e.hit_flash > 0.0, alpha);
+        out.extend(self.blit(raster, dsx, feet - size, size, size, tx, self.sprite_lit(e.x, e.y, tx), e.hit_flash > 0.0, alpha));
     }
 
-    fn draw_barrel(&mut self, b: Barrel) {
+    fn barrel_items(&self, b: Barrel, out: &mut Vec<Item>) {
         let Some((screen_x, tx, base_h)) = self.project(b.x, b.y) else {
             return;
         };
-        let sz = ((base_h as f64 * 0.72) as i32).max(4);
-        let feet = SCREEN_H as i32 / 2 + base_h / 2;
+        let sz = ((base_h as f64 * 0.72) as i32).max(4 * self.scale as i32);
+        let feet = self.fb_h as i32 / 2 + base_h / 2;
         let dsx = (screen_x - sz as f64 / 2.0) as i32;
-        self.draw_shadow(screen_x, feet, sz as f64 * 0.3, tx);
-        let lit = self.sprite_lit(b.x, b.y, tx);
-        self.draw_raster(&bank().barrel, dsx, feet - sz, sz, sz, tx, &lit, b.hit_flash > 0.0, 256);
+        out.push(self.shadow(screen_x, feet, sz as f64 * 0.3, tx));
+        out.extend(self.blit(&bank().barrel, dsx, feet - sz, sz, sz, tx, self.sprite_lit(b.x, b.y, tx), b.hit_flash > 0.0, 256));
     }
 
-    fn draw_fireball(&mut self, fb: Fireball) {
+    fn fireball_items(&self, fb: Fireball, out: &mut Vec<Item>) {
         let Some((screen_x, tx, _)) = self.project(fb.x, fb.y) else {
             return;
         };
-        let sz = (((SCREEN_H as f64 / tx) * 0.35) as i32).max(2);
-        let (cx, cy) = (screen_x, SCREEN_H as f64 / 2.0);
+        let sz = (((self.fb_h as f64 / tx) * 0.35) as i32).max(2 * self.scale as i32);
         let core = sz as f64 * 0.5;
-        let halo = core * 2.2;
-        let sx0 = ((cx - halo) as i32).max(0);
-        let sx1 = ((cx + halo) as i32 + 1).min(SCREEN_W as i32);
-        let sy0 = ((cy - halo) as i32).max(0);
-        let sy1 = ((cy + halo) as i32 + 1).min(SCREEN_H as i32);
-        for x in sx0..sx1 {
-            if tx >= self.depth[x as usize] {
-                continue;
-            }
-            for y in sy0..sy1 {
-                let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
-                let d = (dx * dx + dy * dy).sqrt();
-                let idx = y as usize * SCREEN_W + x as usize;
-                if d < core {
-                    // Hot core, white-yellow in the middle.
-                    let t = (d / core).powi(2);
-                    self.pixels[idx] = make_color((255.0 * (1.0 - t * 0.3)) as i32, (220.0 * (1.0 - t * 0.75)) as i32, (120.0 * (1.0 - t)) as i32);
-                } else if d < halo {
-                    // Additive glow around it.
-                    let g = (1.0 - (d - core) / (halo - core)).powi(2);
-                    let c = self.pixels[idx];
-                    let add = |s: u32, a: f64| ((((c >> s) & 0xFF) as f64 + a * g) as u32).min(255) << s;
-                    self.pixels[idx] = add(16, 170.0) | add(8, 70.0) | add(0, 14.0);
-                }
-            }
-        }
+        out.push(Item::Glow { cx: screen_x, cy: self.fb_h as f64 / 2.0, core, halo: core * 2.2, depth: tx });
     }
 
-    fn draw_pickup(&mut self, p: Pickup) {
+    fn pickup_items(&self, p: Pickup, out: &mut Vec<Item>) {
         let Some((screen_x, tx, base_h)) = self.project(p.x, p.y) else {
             return;
         };
-        let sz = (((SCREEN_H as f64 / tx) * 0.45) as i32).max(4);
+        let sz = (((self.fb_h as f64 / tx) * 0.45) as i32).max(4 * self.scale as i32);
         let dsx = (screen_x - sz as f64 / 2.0) as i32;
         let bob = (self.global_time * 3.0 + p.x + p.y).sin() * (sz as f64 * 0.08);
-        let dsy = (SCREEN_H as f64 / 2.0 + sz as f64 * 0.15 + bob) as i32;
-        let feet = SCREEN_H as i32 / 2 + base_h / 2;
-        self.draw_shadow(screen_x, feet, sz as f64 * 0.36, tx);
-        let lit = self.sprite_lit(p.x, p.y, tx);
+        let dsy = (self.fb_h as f64 / 2.0 + sz as f64 * 0.15 + bob) as i32;
+        let feet = self.fb_h as i32 / 2 + base_h / 2;
+        out.push(self.shadow(screen_x, feet, sz as f64 * 0.36, tx));
         let kind = (p.kind as usize).min(3);
-        self.draw_raster(&bank().pickups[kind], dsx, dsy, sz, sz, tx, &lit, false, 256);
+        out.extend(self.blit(&bank().pickups[kind], dsx, dsy, sz, sz, tx, self.sprite_lit(p.x, p.y, tx), false, 256));
     }
 
-    fn draw_decor(&mut self, d: Decor) {
+    fn decor_items(&self, d: Decor, out: &mut Vec<Item>) {
         let Some((screen_x, tx, base_h)) = self.project(d.x, d.y) else {
             return;
         };
         let scale = if d.kind == DEC_TREE { 1.3 } else { 1.0 };
         let h = (base_h as f64 * scale) as i32;
-        let feet = SCREEN_H as i32 / 2 + base_h / 2;
+        let feet = self.fb_h as i32 / 2 + base_h / 2;
         let dsx = (screen_x - h as f64 / 2.0) as i32;
         let shadow = match d.kind {
             DEC_CHAINS => 0.0,
@@ -1384,64 +1413,32 @@ impl Game {
             _ => 0.18,
         };
         if shadow > 0.0 {
-            self.draw_shadow(screen_x, feet, h as f64 * shadow, tx);
+            out.push(self.shadow(screen_x, feet, h as f64 * shadow, tx));
         }
-        let lit = self.sprite_lit(d.x, d.y, tx);
         let frame = anim_frame(std::f64::consts::TAU, decor_frames(d.kind), self.global_time * 7.0 + d.phase);
-        self.draw_raster(&bank().decor[d.kind][frame], dsx, feet - h, h, h, tx, &lit, false, 256);
+        out.extend(self.blit(&bank().decor[d.kind][frame], dsx, feet - h, h, h, tx, self.sprite_lit(d.x, d.y, tx), false, 256));
     }
 
-    fn draw_particles(&mut self) {
-        let (px, py, ang) = (self.player.x, self.player.y, self.player.angle);
-        // Camera basis is the same for every particle — compute the trig once.
-        let cs = (-ang).cos();
-        let sn = (-ang).sin();
-        let plane_half = (FOV / 2.0).tan();
-        for i in 0..MAX_PARTICLES {
-            let p = self.parts[i];
-            if p.life <= 0.0 {
+    fn particle_items(&self, out: &mut Vec<Item>) {
+        for p in self.parts.iter().filter(|p| p.life > 0.0) {
+            let Some((screen_x, tx, _)) = self.project(p.x, p.y) else {
                 continue;
-            }
-            let dx = p.x - px;
-            let dy = p.y - py;
-            let tx = dx * cs - dy * sn;
-            let ty = dx * sn + dy * cs;
-            if tx <= 0.1 {
-                continue;
-            }
-            let screen_x = (SCREEN_W as f64 / 2.0) * (1.0 + ty / (tx * plane_half));
-            let mut sz = ((SCREEN_H as f64 / tx) * 0.08) as i32;
-            if sz < 1 {
-                sz = 1;
-            }
+            };
             let sx = screen_x as i32;
-            let sy = SCREEN_H as i32 / 2;
-            if sx < 0 || sx >= SCREEN_W as i32 {
+            if sx < 0 || sx >= self.fb_w as i32 || tx >= self.depth[sx as usize] {
                 continue;
             }
-            if tx >= self.depth[sx as usize] {
-                continue;
-            }
-            let mut fade = p.life;
-            if fade > 1.0 {
-                fade = 1.0;
-            }
-            let c = shade_color(p.color, fade);
-            for yy in -sz..=sz {
-                for xx in -sz..=sz {
-                    if xx * xx + yy * yy > sz * sz {
-                        continue;
-                    }
-                    self.put_pixel(sx + xx, sy + yy, c);
-                }
-            }
+            let r = (((self.fb_h as f64 / tx) * 0.08) as i32).max(self.scale as i32);
+            out.push(Item::Dot { sx, sy: self.fb_h as i32 / 2, r, color: shade_color(p.color, p.life.min(1.0)) });
         }
     }
 
-    pub fn render_sprites(&mut self) {
+    /// This frame's sprite draw list: every enemy, pickup, fireball, barrel
+    /// and decoration far to near (so nearer ones draw over farther ones),
+    /// then the particles. Needs the wall depth buffer (`cast_column`).
+    pub(crate) fn sprite_items(&self) -> Vec<Item> {
         // (distance², kind, index); kind 0=enemy 1=pickup 2=fireball 3=barrel
-        // 4=decoration. Fixed-capacity scratch on the stack — no per-frame
-        // allocation.
+        // 4=decoration. Fixed-capacity scratch on the stack.
         const MAX_SPRITES: usize = MAX_ENEMIES + MAX_PICKUPS + MAX_FIREBALLS + MAX_BARRELS + MAX_DECOR;
         let mut refs = [(0.0f64, 0u8, 0usize); MAX_SPRITES];
         let mut n = 0;
@@ -1473,19 +1470,20 @@ impl Game {
         for (i, d) in self.env.decor.iter().enumerate().take(MAX_DECOR) {
             push(d.x, d.y, 4, i);
         }
-        // Far-to-near so nearer sprites overwrite farther ones (stable, so
-        // equal distances keep the same draw order as before).
+        // Far-to-near (stable, so equal distances keep their listed order).
         let refs = &mut refs[..n];
         refs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut out = Vec::with_capacity(2 * n + 16);
         for &(_, kind, idx) in refs.iter() {
             match kind {
-                0 => self.draw_enemy(self.enemies[idx]),
-                1 => self.draw_pickup(self.pickups[idx]),
-                2 => self.draw_fireball(self.fireballs[idx]),
-                3 => self.draw_barrel(self.barrels[idx]),
-                _ => self.draw_decor(self.env.decor[idx]),
+                0 => self.enemy_items(self.enemies[idx], &mut out),
+                1 => self.pickup_items(self.pickups[idx], &mut out),
+                2 => self.fireball_items(self.fireballs[idx], &mut out),
+                3 => self.barrel_items(self.barrels[idx], &mut out),
+                _ => self.decor_items(self.env.decor[idx], &mut out),
             }
         }
-        self.draw_particles();
+        self.particle_items(&mut out);
+        out
     }
 }
