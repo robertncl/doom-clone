@@ -120,7 +120,7 @@ fn write_ppm_emits_a_readable_p6_image() {
     g.reset_game();
     g.show_intro = false;
     g.render_frame();
-    write_ppm(path.to_str().unwrap(), &g.pixels);
+    write_ppm(path.to_str().unwrap(), &g.pixels, g.fb_w, g.fb_h);
 
     let bytes = std::fs::read(&path).unwrap();
     let header = format!("P6\n{} {}\n255\n", SCREEN_W, SCREEN_H);
@@ -145,7 +145,7 @@ fn write_ppm_emits_a_readable_p6_image() {
 fn write_ppm_to_an_unwritable_path_fails_quietly() {
     let g = super::new_game();
     // A directory that doesn't exist: the write errors, and the game carries on.
-    write_ppm("/nonexistent-dir-for-doom-tests/shot.ppm", &g.pixels);
+    write_ppm("/nonexistent-dir-for-doom-tests/shot.ppm", &g.pixels, g.fb_w, g.fb_h);
 }
 
 #[test]
@@ -294,4 +294,37 @@ fn lang_takes_a_code_or_a_locale() {
     assert_eq!(parse_args(&argv(&["--lang"])).lang, None);
     let g = shot_game(&parse_args(&argv(&["--shot", "x.ppm", "--lang", "zh"])));
     assert_eq!(g.lang, LANG_ZH);
+}
+
+#[test]
+fn scale_and_threads_are_parsed_and_range_checked() {
+    let a = parse_args(&argv(&["--scale", "2", "--threads", "6"]));
+    assert_eq!((a.scale, a.threads), (Some(2), Some(6)));
+    for bad in ["0", "99", "big"] {
+        assert_eq!(parse_args(&argv(&["--scale", bad])).scale, None, "scale {bad:?}");
+    }
+    assert_eq!(parse_args(&argv(&["--threads", "0"])).threads, None);
+    assert_eq!(parse_args(&argv(&["--scale"])).scale, None);
+}
+
+#[test]
+fn a_shot_can_be_taken_at_a_higher_scale() {
+    let path = scratch_path("shot2x.ppm");
+    let args = parse_args(&argv(&["--shot", path.to_str().unwrap(), "--scale", "2", "--threads", "4"]));
+    let g = shot_game(&args);
+    assert_eq!((g.scale, g.threads), (2, 4));
+    assert_eq!(run(&args), 0);
+    let bytes = std::fs::read(&path).unwrap();
+    let header = format!("P6\n{} {}\n255\n", 2 * SCREEN_W, 2 * SCREEN_H);
+    assert!(bytes.starts_with(header.as_bytes()));
+    assert_eq!(bytes.len(), header.len() + 4 * SCREEN_W * SCREEN_H * 3);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn headless_runs_default_to_the_logical_size_on_one_thread() {
+    // `run` must not pick the window's 2x default for a headless game.
+    let args = parse_args(&argv(&["--headless", "--frames", "2"]));
+    assert_eq!((args.scale, args.threads), (None, None));
+    assert_eq!(run(&args), 0);
 }

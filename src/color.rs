@@ -9,8 +9,6 @@
 //! and pull texel indices and blend weights out with shifts and masks — no
 //! float-to-int conversions per pixel.
 
-use crate::constants::TEX_SIZE;
-use crate::textures::Tex;
 
 /// Fractional bits in a fixed-point texture coordinate.
 pub const FP_BITS: u32 = 16;
@@ -101,34 +99,41 @@ pub fn shade4(t: [u32; 4], lit: &Lit) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
-/// Bilinear fetch at fixed-point texel coordinates. `u`/`v` are already offset
-/// by half a texel (so texel centres land on whole numbers); the texture wraps.
+/// Bilinear fetch at fixed-point texel coordinates from a square texture of
+/// side `1 << bits` (any mip level). `u`/`v` are already offset by half a
+/// texel (so texel centres land on whole numbers); the texture wraps.
 #[inline(always)]
-pub fn fetch_bilinear(tex: &Tex, u: i64, v: i64) -> [u32; 4] {
-    let mask = (TEX_SIZE - 1) as i64;
+pub fn fetch_bilinear(tex: &[u32], bits: u32, u: i64, v: i64) -> [u32; 4] {
+    let mask = (1i64 << bits) - 1;
     let (tu, tv) = (u >> FP_BITS, v >> FP_BITS);
     let wu = ((u >> (FP_BITS - 8)) & 0xFF) as u32;
     let wv = ((v >> (FP_BITS - 8)) & 0xFF) as u32;
     let x0 = (tu & mask) as usize;
     let x1 = ((tu + 1) & mask) as usize;
-    let row0 = (tv & mask) as usize * TEX_SIZE;
-    let row1 = ((tv + 1) & mask) as usize * TEX_SIZE;
-    blend4(tex[row0 + x0], tex[row0 + x1], tex[row1 + x0], tex[row1 + x1], wu, wv)
+    let row0 = ((tv & mask) as usize) << bits;
+    let row1 = (((tv + 1) & mask) as usize) << bits;
+    // The indices are already in range for a `1 << bits` square; masking by
+    // the slice length lets the compiler see that and drop its bounds checks.
+    let m = tex.len().wrapping_sub(1);
+    blend4(tex[(row0 + x0) & m], tex[(row0 + x1) & m], tex[(row1 + x0) & m], tex[(row1 + x1) & m], wu, wv)
 }
 
 /// Wall-column variant: the horizontal texel pair and X weight are constant
 /// down a whole column, so the caller hoists them and only `v` varies here.
-/// `x0`/`x1` are re-masked so the compiler can prove the fetches in bounds.
+/// `x0`/`x1` are re-masked so a bad caller can't index past the texture.
 #[inline(always)]
-pub fn fetch_col(tex: &Tex, x0: usize, x1: usize, wu: u32, v: i64) -> [u32; 4] {
-    let x0 = x0 & (TEX_SIZE - 1);
-    let x1 = x1 & (TEX_SIZE - 1);
-    let mask = (TEX_SIZE - 1) as i64;
+pub fn fetch_col(tex: &[u32], bits: u32, x0: usize, x1: usize, wu: u32, v: i64) -> [u32; 4] {
+    let m = (1usize << bits) - 1;
+    let (x0, x1) = (x0 & m, x1 & m);
+    let mask = (1i64 << bits) - 1;
     let tv = v >> FP_BITS;
     let wv = ((v >> (FP_BITS - 8)) & 0xFF) as u32;
-    let row0 = (tv & mask) as usize * TEX_SIZE;
-    let row1 = ((tv + 1) & mask) as usize * TEX_SIZE;
-    blend4(tex[row0 + x0], tex[row0 + x1], tex[row1 + x0], tex[row1 + x1], wu, wv)
+    let row0 = ((tv & mask) as usize) << bits;
+    let row1 = (((tv + 1) & mask) as usize) << bits;
+    // The indices are already in range for a `1 << bits` square; masking by
+    // the slice length lets the compiler see that and drop its bounds checks.
+    let m = tex.len().wrapping_sub(1);
+    blend4(tex[(row0 + x0) & m], tex[(row0 + x1) & m], tex[(row1 + x0) & m], tex[(row1 + x1) & m], wu, wv)
 }
 
 /// Texel-space `f64` to the samplers' fixed point, including the half-texel
@@ -140,6 +145,6 @@ pub fn to_fp(texels: f64) -> i64 {
 
 /// Sample and light one texel at float texel coordinates — the convenience
 /// form of [`fetch_bilinear`] + [`shade4`] for code outside the hot loops.
-pub fn sample_lit(tex: &Tex, u: f64, v: f64, lit: &Lit) -> u32 {
-    shade4(fetch_bilinear(tex, to_fp(u), to_fp(v)), lit)
+pub fn sample_lit(tex: &[u32], bits: u32, u: f64, v: f64, lit: &Lit) -> u32 {
+    shade4(fetch_bilinear(tex, bits, to_fp(u), to_fp(v)), lit)
 }

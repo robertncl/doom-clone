@@ -495,7 +495,7 @@ impl Game {
         let title_c = if is_victory { 0x40E0FF } else { 0xFF4040 };
 
         // Dim the play area, tint by outcome
-        let limit = SCREEN_W * (SCREEN_H - 56);
+        let limit = self.fb_w * (self.fb_h - 56 * self.scale);
         for px in self.pixels[..limit].iter_mut() {
             let c = *px;
             let mut r = ((c >> 16) & 0xFF) as i32;
@@ -590,9 +590,10 @@ impl Game {
         let h = 360;
 
         // dim and tint background panel
-        for y in y0..y0 + h {
-            for x in x0..x0 + w {
-                let idx = y as usize * SCREEN_W + x as usize;
+        let s = self.scale;
+        for y in y0 as usize * s..(y0 + h) as usize * s {
+            for x in x0 as usize * s..(x0 + w) as usize * s {
+                let idx = y * self.fb_w + x;
                 let c = self.pixels[idx];
                 let r = ((c >> 16) & 0xFF) as i32;
                 let g = ((c >> 8) & 0xFF) as i32;

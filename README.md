@@ -44,6 +44,8 @@ shows it. The numbers live in `src/difficulty.rs`.
 
 ## Features
 
+- A multi-threaded software renderer that draws the 3D view at the window's
+  native 1280×800 (any multiple of 640×400), with mipmapped 256-pixel textures
 - DDA raycasting with bilinear-filtered procedural textures, coloured fog,
   and a per-level lightmap (soft shadows in corners, flickering torches,
   glowing lava, and light from muzzle flashes, fireballs and explosions)
@@ -170,7 +172,9 @@ Notes:
 | `--shot-angle DEG` | Face the `--shot` camera in a given direction. |
 | `--skill S` | Preset the difficulty slider: `1`-`5` or a name (`hard`, `nightmare`, …). |
 | `--lang L` | Display language: `en`, `fr`, `de`, `ja` or `zh` (a locale such as `de_DE.UTF-8` also works). |
-| `--bench` | Render fixed views of every level plus close-range enemies and print median frame times per stage (`--frames N` sets the repetitions). |
+| `--scale N` | Render resolution: `N` × 640×400, 1 to 4. The window defaults to 2 (1280×800); headless runs and `--shot` default to 1. |
+| `--threads N` | Render threads. The window defaults to the machine's cores, up to 8; headless runs default to 1. |
+| `--bench` | Render fixed views of every level plus close-range enemies and print best-of-N frame times at 640×400 and 1280×800, on one thread and on `--threads`, with a per-stage split (`--frames N` sets the repetitions). |
 
 ### Bot (AI player)
 
@@ -229,17 +233,37 @@ backend here — audio silently disables. Headless runs skip audio entirely.
 ## Architecture notes
 
 - Game logic (raycasting, sprite rendering, HUD, input handling) is fully
-  platform-agnostic and writes into a 640×400 32bpp framebuffer.
+  platform-agnostic and writes into a 32bpp framebuffer.
 - `minifb` owns the platform layer: it creates the window, blits the
-  framebuffer (upscaled to 1280×800), and surfaces key events, which are
-  translated into a small set of game-defined actions.
+  framebuffer (shown 1:1 at the default 1280×800; a 640×400 frame from
+  `--scale 1` is doubled to fill the same window), and surfaces key events,
+  which are translated into a small set of game-defined actions.
 - All shared game state lives in one `Game` struct rather than scattered
   globals.
-- Rendering order: wall columns first (one DDA ray each), then the floor and
-  ceiling or sky a row at a time, skipping pixels a wall already covers. The
-  floor loop runs in fixed point and samples the lightmap every 16 pixels.
-- Sprites are procedural functions, pre-rendered once into cached, mipmapped
-  rasters (`sprites::bank`). Textures are built once per process and shared.
+- Rendering: one DDA ray per framebuffer column resolves that column's wall
+  (extent, texture, mip level, light). The frame is then cut into bands of
+  rows, and each band draws its walls, its floor and ceiling or sky (skipping
+  pixels a wall covers), and its part of each sprite. Bands share nothing
+  mutable, so they render on separate threads (`std::thread::scope`, no
+  `unsafe`, no extra crates), and any thread count gives identical pixels.
+- The framebuffer is `scale` × 640×400. The 3D view renders at full
+  resolution; the HUD is drawn in logical pixels and scaled, so it stays
+  crisp pixel art.
+- Textures are 256 px with mip chains. Each wall column and floor row picks
+  the level closest to one texel per pixel, which keeps distant surfaces
+  stable. Sprites are procedural functions, pre-rendered once into cached,
+  mipmapped rasters (`sprites::bank`). Both are built once per process.
+
+### Why a CPU renderer
+
+Reviewed in November 2026. Measured in a real window, a frame was 1.5 ms of
+rendering and 2.7 ms of presenting, so the limit on picture quality was the
+fixed 640×400 internal resolution on one core, not the software-rendering
+approach. A GPU stack (wgpu or an engine) would add 150+ crates to a tree of
+11, and its output couldn't be checked by the pixel-comparing test suite.
+Rebuilding the renderer to be resolution-independent and parallel gives four
+times the pixels for about the same frame time (1.1 ms at 1280×800 on eight
+threads against 1.07 ms at 640×400 before).
 - Frame delta is clamped for stability so the simulation stays sane across
   hitches.
 

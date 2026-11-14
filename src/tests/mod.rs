@@ -25,6 +25,7 @@ mod level_tests;
 mod main_tests;
 mod playthrough_tests;
 mod render_tests;
+mod scale_tests;
 mod selftest_tests;
 mod sprites_tests;
 

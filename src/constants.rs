@@ -7,7 +7,12 @@ pub const MAP_W: usize = 16;
 pub const MAP_H: usize = 16;
 pub const FOV: f64 = std::f64::consts::PI / 3.0;
 pub const MAX_DEPTH: f64 = 24.0;
-pub const TEX_SIZE: usize = 128; // power of two (sampler wrap masks with TEX_SIZE-1)
+pub const TEX_SIZE: usize = 256; // power of two (samplers wrap with a mask)
+/// Mip levels per texture: 256, 128, 64, 32 and 16 texels.
+pub const TEX_MIPS: usize = 5;
+/// Largest framebuffer scale: the 3D view renders at up to 4x the logical
+/// 640x400 (2560x1600).
+pub const MAX_SCALE: usize = 4;
 
 // Player movement feel: velocity is smoothed toward a target each frame so
 // starts/stops glide instead of snapping. Accel/friction are per-second rates

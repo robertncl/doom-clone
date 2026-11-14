@@ -45,7 +45,7 @@ fn fill_rect_clips_to_the_frame() {
 }
 
 #[test]
-fn a_wall_column_records_depth_and_paints_a_band() {
+fn a_wall_column_records_depth_and_extent() {
     let mut g = open_room();
     g.player.x = 2.5;
     g.player.y = 8.0;
@@ -59,6 +59,11 @@ fn a_wall_column_records_depth_and_paints_a_band() {
 
     assert!(g.depth[SCREEN_W / 2] > 0.0, "the column should record a distance");
     assert!(g.depth[SCREEN_W / 2] < 3.0, "and the wall is close");
+    let (top, bot) = (g.wall_top[SCREEN_W / 2], g.wall_bot[SCREEN_W / 2]);
+    assert!(top < SCREEN_H as i32 / 2 && bot > SCREEN_H as i32 / 2, "the band spans the horizon");
+
+    // Casting only records the wall; the view pass paints it.
+    g.render_frame();
     let mid = px(&g, SCREEN_W / 2, SCREEN_H / 2);
     assert_ne!(mid, 0, "the wall band should be painted");
 }

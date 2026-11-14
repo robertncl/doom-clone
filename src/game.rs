@@ -43,8 +43,18 @@ pub struct Game {
     pub pickups: [Pickup; MAX_PICKUPS],
     pub barrels: [Barrel; MAX_BARRELS],
 
+    /// Framebuffer pixels per logical pixel, each way. The 3D view renders at
+    /// this resolution; the HUD is drawn in logical pixels and scaled up.
+    pub scale: usize,
+    /// Framebuffer size: `SCREEN_W * scale` by `SCREEN_H * scale`.
+    pub fb_w: usize,
+    pub fb_h: usize,
+    /// Threads the view is rendered on (1 = everything on the caller's).
+    pub threads: usize,
     pub pixels: Vec<u32>,
     pub depth: Vec<f64>,
+    /// This frame's wall per framebuffer column (see `render.rs`).
+    pub cols: Vec<crate::render::WallCol>,
     /// Rows each screen column's wall band covers (top and bottom, inclusive),
     /// so the floor pass can skip pixels a wall already painted.
     pub wall_top: Vec<i32>,
@@ -98,8 +108,13 @@ impl Game {
             parts: [Particle::default(); MAX_PARTICLES],
             pickups: [Pickup::default(); MAX_PICKUPS],
             barrels: [Barrel::default(); MAX_BARRELS],
+            scale: 1,
+            fb_w: SCREEN_W,
+            fb_h: SCREEN_H,
+            threads: 1,
             pixels: vec![0; SCREEN_W * SCREEN_H],
             depth: vec![0.0; SCREEN_W],
+            cols: vec![crate::render::WallCol::EMPTY; SCREEN_W],
             wall_top: vec![SCREEN_H as i32 / 2; SCREEN_W],
             wall_bot: vec![SCREEN_H as i32 / 2; SCREEN_W],
             cur_map: [[b'.'; MAP_W]; MAP_H],
@@ -119,6 +134,19 @@ impl Game {
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(2),
         }
+    }
+
+    /// Resize the framebuffer to `scale` times the logical 640x400 (clamped
+    /// to 1..=`MAX_SCALE`). The picture is redrawn from scratch next frame.
+    pub fn set_scale(&mut self, scale: usize) {
+        self.scale = scale.clamp(1, MAX_SCALE);
+        self.fb_w = SCREEN_W * self.scale;
+        self.fb_h = SCREEN_H * self.scale;
+        self.pixels = vec![0; self.fb_w * self.fb_h];
+        self.depth = vec![0.0; self.fb_w];
+        self.cols = vec![crate::render::WallCol::EMPTY; self.fb_w];
+        self.wall_top = vec![self.fb_h as i32 / 2; self.fb_w];
+        self.wall_bot = vec![self.fb_h as i32 / 2; self.fb_w];
     }
 
     // ---- RNG (replaces libc rand(); the exact sequence is unimportant) ----

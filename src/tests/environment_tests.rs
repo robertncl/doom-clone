@@ -285,8 +285,8 @@ fn a_new_flash_replaces_the_faintest_one() {
 
 // ---- textures and skies ----
 
-fn emission(t: &Tex) -> usize {
-    t.iter().filter(|&&c| c >> 24 > 0).count()
+fn emission(t: &MipTex) -> usize {
+    t.levels[0].iter().filter(|&&c| c >> 24 > 0).count()
 }
 
 #[test]
@@ -299,8 +299,8 @@ fn glowing_surfaces_carry_emission_and_plain_ones_do_not() {
     assert_eq!(emission(&tex.flats[FLAT_COBBLE]), 0);
     for kind in 1..WALL_KIND_MAX {
         assert!(emission(&tex.wall[kind][WV_LIGHT]) > 0, "wall kind {kind}'s fixture should glow");
-        assert_ne!(tex.wall[kind][WV_DETAIL][..], tex.wall[kind][WV_BASE][..], "kind {kind} detail");
-        assert_ne!(tex.wall[kind][WV_WORN][..], tex.wall[kind][WV_BASE][..], "kind {kind} worn");
+        assert_ne!(tex.wall[kind][WV_DETAIL].levels[0], tex.wall[kind][WV_BASE].levels[0], "kind {kind} detail");
+        assert_ne!(tex.wall[kind][WV_WORN].levels[0], tex.wall[kind][WV_BASE].levels[0], "kind {kind} worn");
     }
     assert_eq!(emission(&tex.wall[WALL_STONE][WV_BASE]), 0);
 }
@@ -309,7 +309,7 @@ fn glowing_surfaces_carry_emission_and_plain_ones_do_not() {
 fn floor_patches_join_their_base_seamlessly() {
     let tex = Textures::shared();
     for (patch, base) in [(FLAT_TILE_BLOOD, FLAT_TILE), (FLAT_COBBLE_MOSS, FLAT_COBBLE), (FLAT_DIRT_BONES, FLAT_DIRT)] {
-        let (p, b) = (&tex.flats[patch], &tex.flats[base]);
+        let (p, b) = (&tex.flats[patch].levels[0], &tex.flats[base].levels[0]);
         for i in 0..TEX_SIZE {
             for (x, y) in [(i, 0), (0, i), (i, TEX_SIZE - 1), (TEX_SIZE - 1, i)] {
                 assert_eq!(p[y * TEX_SIZE + x], b[y * TEX_SIZE + x], "flat {patch} differs at its edge ({x},{y})");
@@ -384,7 +384,7 @@ fn animation_frames_wrap_around_the_cycle() {
 fn every_cached_sprite_has_pixels_and_full_mip_chains() {
     let b = bank();
     let check = |r: &crate::sprites::Raster, what: &str| {
-        assert_eq!(r.levels.len(), 4, "{what} mips");
+        assert_eq!(r.levels.len(), crate::sprites::MIPS, "{what} mips");
         for (l, lv) in r.levels.iter().enumerate() {
             assert_eq!(lv.len(), (SPR >> l) * (SPR >> l), "{what} level {l} size");
         }

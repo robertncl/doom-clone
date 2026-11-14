@@ -2,7 +2,6 @@
 
 use crate::color::*;
 use crate::constants::TEX_SIZE;
-use crate::textures::Tex;
 
 #[test]
 fn make_color_packs_rgb_and_clamps_out_of_range_channels() {
@@ -45,18 +44,21 @@ fn shade_fp_maps_a_unit_shade_onto_the_fixed_point_range() {
 }
 
 /// A texture that is a flat colour, so sampling is easy to reason about.
-fn flat_tex(c: u32) -> Box<Tex> {
-    vec![c; TEX_SIZE * TEX_SIZE].into_boxed_slice().try_into().unwrap()
+fn flat_tex(c: u32) -> Vec<u32> {
+    vec![c; TEX_SIZE * TEX_SIZE]
 }
+
+/// log2 of the test textures' side.
+const BITS: u32 = TEX_SIZE.trailing_zeros();
 
 #[test]
 fn sampling_a_flat_texture_returns_that_colour_shaded() {
     let tex = flat_tex(0x0080_8080);
-    let full = sample_lit(&tex, 10.0, 10.0, &Lit::uniform(shade_fp(1.0)));
+    let full = sample_lit(&tex, BITS, 10.0, 10.0, &Lit::uniform(shade_fp(1.0)));
     assert_eq!(full, 0x0080_8080, "unshaded sampling is the texel itself");
-    let dark = sample_lit(&tex, 10.0, 10.0, &Lit::uniform(shade_fp(0.5)));
+    let dark = sample_lit(&tex, BITS, 10.0, 10.0, &Lit::uniform(shade_fp(0.5)));
     assert_eq!(dark, make_color(64, 64, 64));
-    let black = sample_lit(&tex, 10.0, 10.0, &Lit::uniform(0));
+    let black = sample_lit(&tex, BITS, 10.0, 10.0, &Lit::uniform(0));
     assert_eq!(black, 0);
 }
 
@@ -66,7 +68,7 @@ fn sampling_wraps_around_the_texture_edges() {
     // Way outside 0..TEX_SIZE, in both directions — the sampler masks, so these
     // must all land on a real texel rather than panicking or reading garbage.
     for (u, v) in [(-5.0, -5.0), (0.0, 0.0), (1e4, -1e4), (TEX_SIZE as f64 + 0.5, 3.5)] {
-        assert_eq!(sample_lit(&tex, u, v, &Lit::uniform(shade_fp(1.0))), 0x0040_5060);
+        assert_eq!(sample_lit(&tex, BITS, u, v, &Lit::uniform(shade_fp(1.0))), 0x0040_5060);
     }
 }
 
@@ -80,9 +82,9 @@ fn bilinear_blending_lands_between_two_texel_colours() {
             buf[y * TEX_SIZE + x] = if x < TEX_SIZE / 2 { 0 } else { 0x00FF_FFFF };
         }
     }
-    let tex: Box<Tex> = buf.into_boxed_slice().try_into().unwrap();
+    let tex = buf;
     let mid = TEX_SIZE as f64 / 2.0;
-    let blended = sample_lit(&tex, mid, 10.0, &Lit::uniform(shade_fp(1.0)));
+    let blended = sample_lit(&tex, BITS, mid, 10.0, &Lit::uniform(shade_fp(1.0)));
     let r = (blended >> 16) & 0xFF;
     assert!((1..255).contains(&r), "expected a blend across the seam, got {r}");
 }
@@ -91,9 +93,9 @@ fn bilinear_blending_lands_between_two_texel_colours() {
 fn the_column_sampler_agrees_with_the_general_one() {
     let tex = flat_tex(0x0011_2233);
     let sh = shade_fp(0.75);
-    let general = sample_lit(&tex, 8.5, 12.25, &Lit::uniform(sh));
+    let general = sample_lit(&tex, BITS, 8.5, 12.25, &Lit::uniform(sh));
     // Same texel pair the wall loop would hoist for u = 8.5.
-    let col = shade4(fetch_col(&tex, 8, 9, 0, to_fp(12.25)), &Lit::uniform(sh));
+    let col = shade4(fetch_col(&tex, BITS, 8, 9, 0, to_fp(12.25)), &Lit::uniform(sh));
     assert_eq!(general, col);
 }
 
@@ -101,6 +103,15 @@ fn the_column_sampler_agrees_with_the_general_one() {
 fn the_column_sampler_masks_indices_into_range() {
     let tex = flat_tex(0x00AA_BBCC);
     // Deliberately out-of-range x indices: the sampler re-masks them.
-    let c = shade4(fetch_col(&tex, TEX_SIZE + 3, TEX_SIZE + 4, 128, to_fp(5.0)), &Lit::uniform(shade_fp(1.0)));
+    let c = shade4(fetch_col(&tex, BITS, TEX_SIZE + 3, TEX_SIZE + 4, 128, to_fp(5.0)), &Lit::uniform(shade_fp(1.0)));
     assert_eq!(c, 0x00AA_BBCC);
+}
+
+#[test]
+fn smaller_mip_levels_sample_the_same_way() {
+    // A 16x16 texture (bits = 4): wraps at 16 and returns its colour.
+    let tex = vec![0x0030_6090u32; 16 * 16];
+    for (u, v) in [(0.0, 0.0), (15.9, 15.9), (-3.0, 40.0)] {
+        assert_eq!(sample_lit(&tex, 4, u, v, &Lit::uniform(shade_fp(1.0))), 0x0030_6090);
+    }
 }
